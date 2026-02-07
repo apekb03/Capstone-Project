@@ -16,51 +16,66 @@ screen = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Rage Bait")
 
 #Player variables
-PLAYER_WIDTH = 50
-PLAYER_HEIGHT = 50
+PLAYER_WIDTH, PLAYER_HEIGHT = 50, 50
+PLAYER_COLOR = (25, 170, 76)
+player_velocity_y = 0
 PLAYER_SPEED = 2
+PLAYER_X = SCREEN_WIDTH // 2 - PLAYER_WIDTH // 2
+PLAYER_Y = SCREEN_HEIGHT //2 - PLAYER_HEIGHT // 2
 GRAVITY = 3
-GROUND_LEVEL = 920
 
-#Lives
-lives = 3
+#Objects and their variables
+GROUND_LEVEL = 820
 
-#Game Clock
-clock = pygame.time.Clock()
+PLATFORM_1 = 620
 
-#Player and objects
 
+
+#Heart Rate
+heartRate = 0
 #Main Game Loop
-def play(p1_x = None, p1_y = None, lives = None):
+clock = pygame.time.Clock()
+#NOTE: THIS WILL LATER BE PLACED INTO A FUNCTION WHEN MENUS ARE EVENTUALLY ADDDED
+# PLAYER WILL ALSO GET ITS OWN CLASS IN THE FUTURE
+isRunning = True
+while isRunning:
+	screen.fill(BLACK)
+	delta_time = clock.tick(60) / 1000
 
-	if p1_x is None:
-		p1_x = PLAYER_WIDTH/2
-	if p1_y is None:
-		p1_y = PLAYER_WIDTH/2
-	if lives is None:
-		lives = 3
+	#Keybinding
+	for event in pygame.event.get():
+		if event.type == pygame.QUIT:
+			isRunning = False
+	if event.type == pygame.KEYDOWN:
+		if event.key == pygame.K_RIGHT:
+			PLAYER_X += PLAYER_SPEED
+		if event.key == pygame.K_LEFT:
+			PLAYER_X -= PLAYER_SPEED
+		if event.key == pygame.K_UP:
+			PLAYER_Y -= PLAYER_SPEED
+		if event.key == pygame.K_DOWN:
+			PLAYER_Y += PLAYER_SPEED
 
-	isRunning = True
-	while isRunning:
-		screen.fill(BLACK)
-		delta_time = clock.tick(60) / 1000
+	#Setting boundaries for player
+	PLAYER_X = max(0, min(PLAYER_X, SCREEN_WIDTH - PLAYER_WIDTH))
+	PLAYER_Y = max(0, min(PLAYER_Y, SCREEN_HEIGHT - PLAYER_HEIGHT))
 
-		for event in pygame.event.get():
-			if event.type == pygame.QUIT:
-				isRunning = False
+	pygame.draw.rect(screen, PLAYER_COLOR, (PLAYER_X, PLAYER_Y, PLAYER_WIDTH, PLAYER_HEIGHT))
+	#Platforms Arguments: for pygame.Rect(RGB Color), (x, y, width, height)
+	GROUND_LEVEL
+	pygame.draw.rect(screen, (0, 255, 0), (0, GROUND_LEVEL, SCREEN_WIDTH, 300))
 
-	#Platforms
-		GROUND_LEVEL
-		pygame.draw.rect(screen, (0, 255, 0), (0, GROUND_LEVEL, SCREEN_WIDTH, 100))
+	PLATFORM_1
+	pygame.draw.rect(screen, (255, 0, 0), (1000, PLATFORM_1, 500, 50))
+
 
 	#Rendering text
-		lives_text = FONT.render(f"Lives: {lives}", True, WHITE)
+	heartRate_Text = FONT.render(f"HeartRate: {heartRate}", True, WHITE)
 
 	#Display
-		screen.blit(lives_text, (10, 50))
+	screen.blit(heartRate_Text, (10, 50))
 
 
-		pygame.display.flip()
+	pygame.display.flip()
 
-	pygame.quit()
-play()
+pygame.quit()
