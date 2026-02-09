@@ -1,0 +1,31 @@
+#Build change notes on rageBait.py
+For movement control currently using(2/9/2026):
+-----------------------------------------------------------------------
+#Keybinding
+        for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                        isRunning = False
+        if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RIGHT:
+                        PLAYER_X += PLAYER_SPEED
+                if event.key == pygame.K_LEFT:
+                        PLAYER_X -= PLAYER_SPEED
+                if event.key == pygame.K_UP and player_velocity_y == 0:
+                        player_velocity_y = -30
+                if event.key == pygame.K_DOWN:
+                        PLAYER_Y += PLAYER_SPEED
+--------------------------------------------------------------------------
+This does work for now and allows movement but it is very choppy and not smooth
+Below is an updated movement code taken from the ExampleCode.py file found in the github rep "Game_Files"
+--------------------------------------------------------------------------------
+#Key control
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LEFT] and p1_x > 0:
+            p1_x -= PLAYER_SPEED
+        if keys[pygame.K_RIGHT] and p1_x + PLAYER_WIDTH < SCREEN_WIDTH:
+            p1_x += PLAYER_SPEED
+        if keys[pygame.K_SPACE] and not isJumping:
+            p1_velocity_y = -400 * delta_time
+            isJumping = True
+----------------------------------------------------------------------------
+Updated the base code to have collision, working gravity, and jumping
