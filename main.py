@@ -1,18 +1,18 @@
-
 import os
 import sys
 import random
 import math
+import socket
+import threading
 from dataclasses import dataclass
 
 import pygame
 
 # ============================================================
-# Heartbeat Devil — Pixel Art + Parallax + Longer Levels
+# Heartbeat Devil — Pixel Art + Parallax + Longer Levels + Live BPM (UDP)
 # - Keeps ALL gameplay logic (movement/trap behavior) the same.
-# - Upgrades rendering: tile platforms, parallax backgrounds,
-#   animated spikes / laser / cracked falling blocks.
-# - Extends levels to multi-screen width with a camera.
+# - Uses your existing assets in assets/ (absolute path supported).
+# - Optional: receives LIVE BPM from your phone via UDP (Option B).
 # ============================================================
 
 # ----------------------------
@@ -21,16 +21,35 @@ import pygame
 WIDTH, HEIGHT = 1280, 720
 FPS = 60
 
-ASSETS_DIR = "assets"
+# ✅ Your absolute assets folder (Windows)
+# If this path doesn't exist on another machine, it falls back to local "./assets".
+ABS_ASSETS_DIR = r"C:\Users\sasuke rawal\Desktop\heartbeat_devil\Capstone-Project\assets"
+ASSETS_DIR = ABS_ASSETS_DIR if os.path.isdir(ABS_ASSETS_DIR) else "assets"
 
-# Player (your provided sprite)
+# ----------------------------
+# LIVE BPM (Option B: phone -> PC over UDP)
+# ----------------------------
+USE_LIVE_BPM_UDP = True   # set False to use the built-in drift + +/- keys only
+UDP_BIND_IP = "0.0.0.0"   # listen on all interfaces
+UDP_PORT = 5005           # your phone app must send to this port
+UDP_TIMEOUT = 0.2         # seconds
+
+# Expected UDP payloads (any one works):
+#   "82"              -> bpm number
+#   "BPM:82"          -> bpm number
+#   '{"bpm":82}'      -> json bpm
+# If parsing fails, the packet is ignored.
+
+# ----------------------------
+# Player / art
+# ----------------------------
 PLAYER_PATH = os.path.join(ASSETS_DIR, "player", "player.png")
 
-# Optional animation sheets (generated from your character art)
+# Optional animation sheets (if you have them)
 PLAYER_IDLE_PATH = os.path.join(ASSETS_DIR, "player", "player_idle.png")   # 4 frames, horizontal
 PLAYER_RUN_PATH  = os.path.join(ASSETS_DIR, "player", "player_run.png")    # 6 frames, horizontal
 PLAYER_JUMP_PATH = os.path.join(ASSETS_DIR, "player", "player_jump.png")   # 3 frames, horizontal
-PLAYER_SHEET_FRAME = 256  # our generated sheets use 256x256 per frame
+PLAYER_SHEET_FRAME = 256  # sheet frame size used by your files
 
 # Tilesets (32×32 tiles recommended)
 TILE_SIZE = 32
@@ -39,11 +58,11 @@ TILES_STONE = os.path.join(ASSETS_DIR, "tiles", "stone_tileset.png")
 TILES_INDUSTRIAL = os.path.join(ASSETS_DIR, "tiles", "industrial_tileset.png")
 
 # Traps
-SPIKES_SHEET = os.path.join(ASSETS_DIR, "traps", "spikes.png")          # 4 frames in a single horizontal row
-LASER_TEX = os.path.join(ASSETS_DIR, "traps", "laser.png")             # scrolling texture
-FALLING_BLOCK_SHEET = os.path.join(ASSETS_DIR, "traps", "falling_block.png")  # 2 frames row: normal, cracked
+SPIKES_SHEET = os.path.join(ASSETS_DIR, "traps", "spikes.png")                # 4 frames row
+LASER_TEX = os.path.join(ASSETS_DIR, "traps", "laser.png")                    # scrolling texture
+FALLING_BLOCK_SHEET = os.path.join(ASSETS_DIR, "traps", "falling_block.png")  # 2 frames: normal, cracked
 
-# Door (simple sprite)
+# Door sprite
 DOOR_SPRITE = os.path.join(ASSETS_DIR, "props", "door.png")
 
 # Parallax backgrounds (3-layer per level)
@@ -65,7 +84,9 @@ BG_LAYERS = {
     ),
 }
 
+# ----------------------------
 # Gameplay (UNCHANGED)
+# ----------------------------
 GRAVITY = 2400.0
 BASE_MOVE_SPEED = 380.0
 BASE_JUMP_VEL = -850.0
@@ -144,8 +165,81 @@ def key_any(keys, key_tuple):
     return any(keys[k] for k in key_tuple)
 
 
-def stable_rng(seed_int: int):
-    return random.Random(seed_int & 0xFFFFFFFF)
+# ----------------------------
+# LIVE BPM UDP RECEIVER (non-blocking, thread)
+# ----------------------------
+class LiveBPMReceiver:
+    def __init__(self, bind_ip=UDP_BIND_IP, port=UDP_PORT):
+        self.bind_ip = bind_ip
+        self.port = port
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    @staticmethod
+    def _parse_bpm(msg: str):
+        msg = msg.strip()
+        if not msg:
+            return None
+        # JSON: {"bpm":82}
+        if msg.startswith("{") and msg.endswith("}"):
+            try:
+                import json
+                obj = json.loads(msg)
+                bpm = int(round(float(obj.get("bpm", None))))
+                return bpm
+            except Exception:
+                return None
+        # "BPM:82"
+        if ":" in msg:
+            parts = msg.split(":")
+            for p in reversed(parts):
+                p = p.strip()
+                if p.replace(".", "", 1).isdigit():
+                    return int(round(float(p)))
+        # plain number
+        if msg.replace(".", "", 1).isdigit():
+            return int(round(float(msg)))
+        return None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def latest_bpm(self):
+        with self._lock:
+            return self._latest
+
+    def _run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(UDP_TIMEOUT)
+        try:
+            sock.bind((self.bind_ip, self.port))
+        except OSError:
+            # If port is busy, do nothing (game still runs).
+            return
+
+        while not self._stop.is_set():
+            try:
+                data, _addr = sock.recvfrom(256)
+                msg = data.decode("utf-8", errors="ignore")
+                bpm = self._parse_bpm(msg)
+                if bpm is None:
+                    continue
+                bpm = int(clamp(bpm, 40, 200))
+                with self._lock:
+                    self._latest = bpm
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
 
 
 # ----------------------------
@@ -174,13 +268,21 @@ class HeartRateController:
         self._target = float(baseline_bpm)
         self._timer = 0.0
         self.mode_override = None
+        self.live_bpm = None  # set by UDP receiver
 
     def update(self, dt, keys):
-        # manual bpm tweak
+        # manual bpm tweak always works
         if keys[KEY_HR_UP]:
             self.current += 60 * dt
         if keys[KEY_HR_DOWN]:
             self.current -= 60 * dt
+
+        # If live bpm is present, follow it smoothly (no gameplay rule change; just input source)
+        if self.live_bpm is not None:
+            self._target = float(self.live_bpm)
+            self.current += (self._target - self.current) * min(1.0, dt * 8.0)
+            self.current = clamp(self.current, 45, 190)
+            return
 
         # mock “live” drift
         self._timer += dt
@@ -204,9 +306,6 @@ class HeartRateController:
             return "stress"
 
         b = self.bpm()
-        # your rule:
-        # stress at >= baseline+10
-        # panic at > baseline+20
         if b > self.baseline + PANIC_DELTA:
             return "panic"
         if b >= self.baseline + STRESS_DELTA:
@@ -217,7 +316,6 @@ class HeartRateController:
 # ----------------------------
 # PLAYER ANIM (kept simple; your sprite)
 # ----------------------------
-
 class PlayerAnimator:
     """
     Visual-only animator.
@@ -228,21 +326,16 @@ class PlayerAnimator:
         self.time = 0.0
         self.scaled_size = scaled_size
 
-        # Fallback single sprite
         self.base = pygame.transform.smoothscale(base_sprite, (scaled_size, scaled_size))
-
-        # Try to load sheets (safe if missing)
         self.idle_frames = self._try_load_sheet(PLAYER_IDLE_PATH, frames=4)
         self.run_frames  = self._try_load_sheet(PLAYER_RUN_PATH,  frames=6)
         self.jump_frames = self._try_load_sheet(PLAYER_JUMP_PATH, frames=3)
 
-        # Timing
         self.idle_fps = 6.0
         self.run_fps = 12.0
         self.jump_fps = 8.0
 
     def _prep_frame(self, frame: pygame.Surface) -> pygame.Surface:
-        # Crop to non-transparent bounds for nicer scaling
         rect = frame.get_bounding_rect(min_alpha=1)
         if rect.w > 2 and rect.h > 2:
             frame = frame.subsurface(rect).copy()
@@ -276,7 +369,6 @@ class PlayerAnimator:
         return frames[idx]
 
     def get_frame(self, facing: int, on_ground: bool, moving: bool, vy: float):
-        # Choose animation set
         if not on_ground:
             spr = self._frame_from(self.jump_frames, self.jump_fps)
         elif moving:
@@ -288,6 +380,8 @@ class PlayerAnimator:
             spr = pygame.transform.flip(spr, True, False)
 
         return spr, 0, 0
+
+
 # ----------------------------
 # OBJECTS (unchanged)
 # ----------------------------
@@ -351,13 +445,10 @@ def draw_platforms_tilemap(dst: pygame.Surface, cam: Camera, level_idx: int, pla
     for r in platforms:
         sx = cam.world_to_screen_x(r.x)
         sy = r.y
-        # Only draw if on screen (simple cull)
         if sx > WIDTH or sx + r.w < 0:
             continue
 
-        # draw top row
         blit_tiled(dst, top, sx, sy, r.w, min(TILE_SIZE, r.h))
-        # fill under top if platform is thick
         if r.h > TILE_SIZE:
             blit_tiled(dst, fill, sx, sy + TILE_SIZE, r.w, r.h - TILE_SIZE)
 
@@ -392,7 +483,6 @@ def draw_laser_pixel(dst: pygame.Surface, cam: Camera, rect: pygame.Rect, t: flo
 
     scroll = int((t * 140) % tex.get_width())
     x = sx - scroll
-    # tile horizontally across the rect
     while x < sx + rect.w:
         dst.blit(tex, (x, rect.y + (rect.h - tex.get_height()) // 2))
         x += tex.get_width()
@@ -400,7 +490,6 @@ def draw_laser_pixel(dst: pygame.Surface, cam: Camera, rect: pygame.Rect, t: flo
 
 def draw_falling_block(dst: pygame.Surface, cam: Camera, trap: Trap):
     sheet = load_image(FALLING_BLOCK_SHEET)
-    # 2 frames (normal, cracked)
     fw = TILE_SIZE
     fh = TILE_SIZE
     normal = sheet.subsurface((0, 0, fw, fh)) if sheet.get_width() >= fw else sheet
@@ -410,9 +499,7 @@ def draw_falling_block(dst: pygame.Surface, cam: Camera, trap: Trap):
     if sx > WIDTH or sx + trap.rect.w < 0:
         return
 
-    # cracked state "warning" before dropping (triggered but not yet moving)
     img = cracked if (trap.triggered and trap.active and trap.rect.y == trap.base_y) else normal
-    # tile to fill the trap rect
     blit_tiled(dst, img, sx, trap.rect.y, trap.rect.w, trap.rect.h)
 
 
@@ -421,11 +508,9 @@ def draw_door_sprite(dst: pygame.Surface, cam: Camera, door: Door, t=0.0):
     sx = cam.world_to_screen_x(door.rect.x)
     if sx > WIDTH or sx + door.rect.w < 0:
         return
-    # slight glow pulse for fake/spiky
     if door.fake or door.spiky:
         pulse = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(t * 6.0))
-        glow = pygame.transform.rotozoom(spr, 0, 1.0)
-        glow = glow.copy()
+        glow = spr.copy()
         glow.fill((255, 60, 220, int(120 * pulse)), special_flags=pygame.BLEND_RGBA_MULT)
         dst.blit(glow, (sx - 6, door.rect.y - 6))
     dst.blit(spr, (sx, door.rect.y))
@@ -445,25 +530,23 @@ def draw_parallax(dst: pygame.Surface, cam: Camera, level_idx: int):
     mid = load_image(mid_p)
     front = load_image(front_p)
 
-    # Parallax factors (far moves slow)
     x = cam.x
     for img, fac in ((back, 0.25), (mid, 0.55), (front, 0.85)):
         ox = int(-(x * fac) % img.get_width())
-        # tile across screen width
         dst.blit(img, (ox - img.get_width(), 0))
         dst.blit(img, (ox, 0))
         dst.blit(img, (ox + img.get_width(), 0))
 
 
 # ----------------------------
-# LEVELS (longer multi-screen)
+# LEVELS (longer multi-screen) — unchanged from your provided code
 # ----------------------------
 class Level:
     def __init__(self, idx: int):
         self.idx = idx
         self.spawn = (70, HEIGHT - 160)
 
-        self.world_w = WIDTH  # updated by build()
+        self.world_w = WIDTH
         self.platforms = []
         self.traps = []
         self.doors = []
@@ -475,7 +558,6 @@ class Level:
         self.build(idx)
 
     def build(self, idx: int):
-        # Reset
         self.platforms = []
         self.traps = []
         self.doors = []
@@ -483,10 +565,8 @@ class Level:
         self.zoom_troll_zone = None
         self.level_time = 0.0
 
-        # Short & spicy: ~6–10 screens (we use 8)
         self.world_w = WIDTH * 8
 
-        # Helpers
         def P(x, y, w, h=22):
             r = pygame.Rect(int(x), int(y), int(w), int(h))
             self.platforms.append(r)
@@ -497,128 +577,93 @@ class Level:
             self.traps.append(tr)
             return tr
 
-        # ------------------------------
-        # GLOBAL: Start pad only (NO full ground)
-        # ------------------------------
-        start_pad = P(0, HEIGHT - 78, 520, 78)
-
-        # Default spawn
+        # Start pad only (NO full ground)
+        P(0, HEIGHT - 78, 520, 78)
         self.spawn = (80, HEIGHT - 160)
 
-        # ==============================
-        # LEVEL 1 — Intro / Troll
-        # Goal: teach "trust issues" fast.
-        # ==============================
+        # LEVEL 1
         if idx == 1:
-            # SECTION A (screen 0–1): immediate risk jumps
-            # A1: short hop over pit to a collapsing floor that dumps into spikes
-            P(560, HEIGHT - 170, 160)  # landing
+            P(560, HEIGHT - 170, 160)
             cf1 = T(pygame.Rect(760, HEIGHT - 190, 170, 18), "collapsing_floor", active=True)
             self.platforms.append(cf1.rect)
-            T(pygame.Rect(760, HEIGHT - 110, 170, 32), "spikes")  # punishes late reaction
+            T(pygame.Rect(760, HEIGHT - 110, 170, 32), "spikes")
 
-            # A2: trigger hidden spikes "after" you land (trust issue)
             P(980, HEIGHT - 250, 170)
             T(pygame.Rect(980, HEIGHT - 320, 120, 160), "trigger_hidden_spikes")
             hs1 = T(pygame.Rect(1140, HEIGHT - 110, 190, 32), "hidden_spikes", active=False)
             hs1.cooldown = 0.0
-            P(1180, HEIGHT - 220, 160)  # safe-looking out
+            P(1180, HEIGHT - 220, 160)
 
-            # SECTION B (screen 2–3): falling blocks over predictable landings + laser gate mid-jump
-            # B1: falling block above the "obvious" platform
             P(1500, HEIGHT - 260, 180)
             fb1 = T(pygame.Rect(1540, 210, 70, 70), "falling_block", active=True)
             fb1.base_x, fb1.base_y = fb1.rect.x, fb1.rect.y
 
-            # B2: laser gate placed mid-jump corridor (timed)
-            # Jump from 1780->2050 while laser toggles
             P(1780, HEIGHT - 330, 150)
-            laser1 = T(pygame.Rect(1960, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(1960, 0, 18, HEIGHT), "laser", active=True)
             P(2050, HEIGHT - 270, 170)
 
-            # SECTION C (screen 3–5): shifting wall + spikes "combo room"
-            # C1: a narrow hallway + shifting wall that pushes you off a ledge into spikes
             P(2300, HEIGHT - 210, 220)
-            wall = T(pygame.Rect(2570, HEIGHT - 245, 34, 165), "shifting_wall", active=True, speed=260, dir=-1)
-            # spikes bed positioned where you'll get shoved if you hesitate
+            T(pygame.Rect(2570, HEIGHT - 245, 34, 165), "shifting_wall", active=True, speed=260, dir=-1)
             T(pygame.Rect(2640, HEIGHT - 110, 240, 32), "spikes")
-            # escape platform
             P(2920, HEIGHT - 290, 180)
 
-            # C2: input swap zone immediately after a safe landing (panic moment)
             T(pygame.Rect(3120, HEIGHT - 520, 520, 360), "input_swap_zone")
             P(3240, HEIGHT - 240, 220)
 
-            # SECTION D (screen 5–7): short final gauntlet with alternating “safe” and “kill”
-            # D1: collapsing floor + laser stagger (no filler)
             cf2 = T(pygame.Rect(3560, HEIGHT - 220, 180, 18), "collapsing_floor", active=True)
             self.platforms.append(cf2.rect)
             P(3810, HEIGHT - 300, 160)
-            laser2 = T(pygame.Rect(4000, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(4000, 0, 18, HEIGHT), "laser", active=True)
             P(4150, HEIGHT - 250, 180)
 
-            # D2: gravity flip zone placed to throw you into a falling block (troll combo)
-            # Player hits zone while airborne, flips, then must react to a block above ceiling line.
             T(pygame.Rect(4440, HEIGHT - 520, 520, 360), "gravity_flip_zone")
             P(4480, HEIGHT - 260, 190)
 
             fb2 = T(pygame.Rect(4700, 160, 70, 70), "falling_block", active=True)
             fb2.base_x, fb2.base_y = fb2.rect.x, fb2.rect.y
 
-            # End platforms
             P(self.world_w - 520, HEIGHT - 210, 220)
             P(self.world_w - 260, HEIGHT - 210, 200)
 
-            # Door troll + real door
             self.doors.append(Door(pygame.Rect(self.world_w - 230, HEIGHT - 170, 64, 98), fake=True, moves=True))
             self.real_door = Door(pygame.Rect(self.world_w - 120, HEIGHT - 170, 64, 98), fake=False)
             self.doors.append(self.real_door)
 
             self.zoom_troll_zone = pygame.Rect(self.world_w - 900, HEIGHT - 520, 760, 420)
 
-        # ==============================
-        # LEVEL 2 — Vertical / Lasers
-        # Goal: vertical climbs with laser timing + crushers.
-        # ==============================
+        # LEVEL 2
         elif idx == 2:
-            # SECTION A: vertical staircase with lasers cutting climbs
             P(520, HEIGHT - 190, 160)
             P(760, HEIGHT - 300, 150)
-            laserA = T(pygame.Rect(980, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(980, 0, 18, HEIGHT), "laser", active=True)
             P(1080, HEIGHT - 420, 150)
             P(1320, HEIGHT - 520, 150)
 
-            # SECTION B: rising pit (crusher) under a bait platform
-            bait = P(1600, HEIGHT - 220, 220)
+            P(1600, HEIGHT - 220, 220)
             crusher = T(pygame.Rect(1600, HEIGHT - 78, 220, 78), "rising_pit", active=False)
             crusher.base_x, crusher.base_y = crusher.rect.x, crusher.rect.y
             T(pygame.Rect(1440, HEIGHT - 270, 140, 150), "trigger_rising_pit")
 
-            # SECTION C: “trust issues” landing — collapsing floor into spikes, but with a “save” route above
-            high_save = P(1980, HEIGHT - 470, 180)
+            P(1980, HEIGHT - 470, 180)
             cf = T(pygame.Rect(1980, HEIGHT - 250, 180, 18), "collapsing_floor", active=True)
             self.platforms.append(cf.rect)
             T(pygame.Rect(1980, HEIGHT - 110, 200, 32), "spikes")
 
-            # SECTION D: laser gate + falling block combo mid climb
             P(2300, HEIGHT - 360, 160)
-            laserB = T(pygame.Rect(2480, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(2480, 0, 18, HEIGHT), "laser", active=True)
             P(2620, HEIGHT - 480, 150)
 
             fb = T(pygame.Rect(2660, 170, 70, 70), "falling_block", active=True)
             fb.base_x, fb.base_y = fb.rect.x, fb.rect.y
 
-            # SECTION E: homing pressure corridor (short, not spam)
             P(2920, HEIGHT - 300, 220)
             hz = T(pygame.Rect(3000, HEIGHT - 560, 520, 420), "spawn_homing")
             hz.cooldown = 0.0
-            # escape platforms
             P(3520, HEIGHT - 420, 160)
             P(3780, HEIGHT - 320, 180)
 
-            # SECTION F: input swap + laser “finish check”
             T(pygame.Rect(4040, HEIGHT - 520, 520, 360), "input_swap_zone")
-            laserC = T(pygame.Rect(4580, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(4580, 0, 18, HEIGHT), "laser", active=True)
 
             P(self.world_w - 520, HEIGHT - 240, 220)
             P(self.world_w - 260, HEIGHT - 240, 200)
@@ -629,20 +674,15 @@ class Level:
 
             self.zoom_troll_zone = pygame.Rect(self.world_w - 950, HEIGHT - 520, 820, 420)
 
-        # ==============================
-        # LEVEL 3 — Chaos / Kaizo
-        # Goal: fast reaction chains, mixed mechanics, no safe jumps.
-        # ==============================
+        # LEVEL 3
         else:
-            # SECTION A: immediate kaizo opener: jump -> laser -> collapsing floor -> spikes
             P(520, HEIGHT - 260, 150)
-            laser1 = T(pygame.Rect(720, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(720, 0, 18, HEIGHT), "laser", active=True)
 
             cf1 = T(pygame.Rect(920, HEIGHT - 260, 160, 18), "collapsing_floor", active=True)
             self.platforms.append(cf1.rect)
             T(pygame.Rect(920, HEIGHT - 110, 180, 32), "spikes")
 
-            # SECTION B: hidden spikes ambush + falling block (combo)
             P(1160, HEIGHT - 360, 150)
             T(pygame.Rect(1160, HEIGHT - 430, 140, 160), "trigger_hidden_spikes")
             hs = T(pygame.Rect(1340, HEIGHT - 110, 200, 32), "hidden_spikes", active=False)
@@ -652,34 +692,29 @@ class Level:
             fb1.base_x, fb1.base_y = fb1.rect.x, fb1.rect.y
             P(1460, HEIGHT - 280, 150)
 
-            # SECTION C: gravity flip + laser timing (forces brain swap)
             T(pygame.Rect(1700, HEIGHT - 560, 520, 420), "gravity_flip_zone")
-            laser2 = T(pygame.Rect(2240, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(2240, 0, 18, HEIGHT), "laser", active=True)
             P(2320, HEIGHT - 420, 160)
             P(2560, HEIGHT - 300, 160)
 
-            # SECTION D: shifting wall shove into a spike pit + homing pressure
             P(2820, HEIGHT - 220, 220)
-            wall = T(pygame.Rect(3080, HEIGHT - 245, 34, 165), "shifting_wall", active=True, speed=300, dir=-1)
+            T(pygame.Rect(3080, HEIGHT - 245, 34, 165), "shifting_wall", active=True, speed=300, dir=-1)
             T(pygame.Rect(3160, HEIGHT - 110, 260, 32), "spikes")
             hz = T(pygame.Rect(3120, HEIGHT - 560, 640, 420), "spawn_homing")
             hz.cooldown = 0.0
 
-            # SECTION E: input swap right before a precision landing (kaizo)
             T(pygame.Rect(3680, HEIGHT - 520, 520, 360), "input_swap_zone")
             P(3840, HEIGHT - 350, 120)
             P(4040, HEIGHT - 460, 120)
 
-            # SECTION F: final “no mercy” chain: lasers staggered + collapsing floor
-            laser3 = T(pygame.Rect(4300, 0, 18, HEIGHT), "laser", active=True)
-            laser4 = T(pygame.Rect(4460, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(4300, 0, 18, HEIGHT), "laser", active=True)
+            T(pygame.Rect(4460, 0, 18, HEIGHT), "laser", active=True)
 
             cf2 = T(pygame.Rect(4660, HEIGHT - 260, 170, 18), "collapsing_floor", active=True)
             self.platforms.append(cf2.rect)
             P(4880, HEIGHT - 360, 150)
             T(pygame.Rect(5060, HEIGHT - 110, 220, 32), "spikes")
 
-            # End pads + doors
             P(self.world_w - 520, HEIGHT - 220, 220)
             P(self.world_w - 260, HEIGHT - 220, 200)
 
@@ -688,7 +723,6 @@ class Level:
             self.doors.append(self.real_door)
 
             self.zoom_troll_zone = pygame.Rect(self.world_w - 1050, HEIGHT - 560, 920, 460)
-
 
     def update(self, dt, player_rect: pygame.Rect):
         self.level_time += dt
@@ -760,14 +794,12 @@ class Level:
             elif t.kind == "spawn_homing":
                 if t.cooldown > 0:
                     t.cooldown -= dt
-
                 if player_rect.colliderect(t.rect) and t.cooldown <= 0:
                     t.cooldown = 1.2
                     start = pygame.Vector2(t.rect.left - 18, t.rect.centery + random.uniform(-70, 70))
                     vel = pygame.Vector2(230, random.uniform(-45, 45))
                     self.projectiles.append(Projectile(start, vel, radius=11, active=True, homing=True, ttl=5.5))
 
-        # projectiles
         for p in self.projectiles:
             if not p.active:
                 continue
@@ -789,47 +821,35 @@ class Level:
         self.projectiles = [p for p in self.projectiles if p.active]
 
     def draw(self, surf: pygame.Surface, cam: Camera):
-        # parallax first
         draw_parallax(surf, cam, self.idx)
-
-        # platforms (tilemap)
         draw_platforms_tilemap(surf, cam, self.idx, self.platforms)
 
-        # traps
         for t in self.traps:
             if t.kind in ("spikes", "delayed_spikes"):
                 if t.kind == "delayed_spikes" and not t.active:
                     continue
                 draw_spikes_pixel(surf, cam, t.rect, t=t.t)
-
             elif t.kind == "laser" and t.active:
                 draw_laser_pixel(surf, cam, t.rect, t.t)
-
             elif t.kind == "shifting_wall":
-                # draw as tiled industrial block
                 tiles = load_tileset(TILES_INDUSTRIAL)
                 tile = tiles[0]
                 sx = cam.world_to_screen_x(t.rect.x)
                 if not (sx > WIDTH or sx + t.rect.w < 0):
                     blit_tiled(surf, tile, sx, t.rect.y, t.rect.w, t.rect.h)
-
             elif t.kind == "collapsing_floor":
                 if t.active:
-                    # draw as platforms already; add subtle highlight
                     sx = cam.world_to_screen_x(t.rect.x)
                     if not (sx > WIDTH or sx + t.rect.w < 0):
                         overlay = pygame.Surface((t.rect.w, t.rect.h), pygame.SRCALPHA)
                         overlay.fill((255, 255, 255, 25))
                         surf.blit(overlay, (sx, t.rect.y))
-
             elif t.kind == "falling_block":
                 if t.active:
                     draw_falling_block(surf, cam, t)
-
             elif t.kind == "hidden_spikes":
                 if t.active:
                     draw_spikes_pixel(surf, cam, t.rect, t=t.t)
-
             elif t.kind == "rising_pit":
                 if t.active or t.active in ("hold", "down"):
                     tiles = load_tileset(TILES_STONE)
@@ -837,17 +857,12 @@ class Level:
                     sx = cam.world_to_screen_x(t.rect.x)
                     if not (sx > WIDTH or sx + t.rect.w < 0):
                         blit_tiled(surf, tile, sx, t.rect.y, t.rect.w, t.rect.h)
-
-            elif t.kind in ("gravity_flip_zone", "input_swap_zone", "trigger_hidden_spikes",
-                            "trigger_rising_pit", "arm_delayed_spikes", "spawn_homing"):
-                # invisible zones (no debug fill in shipping visuals)
+            else:
                 pass
 
-        # doors
         for d in self.doors:
             draw_door_sprite(surf, cam, d, t=self.level_time)
 
-        # projectiles
         for p in self.projectiles:
             draw_projectile(surf, cam, p)
 
@@ -859,7 +874,7 @@ class Player:
     def __init__(self, x, y, sprite):
         self.anim = PlayerAnimator(sprite, scaled_size=PLAYER_SIZE)
 
-        self.pos = pygame.Vector2(x, y)  # float position
+        self.pos = pygame.Vector2(x, y)
         self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
 
         self.vx = 0.0
@@ -986,10 +1001,7 @@ class Player:
             self.coyote = 0.0
             self.on_ground = False
 
-        # gravity:
         g = -GRAVITY if self.gravity_flipped else GRAVITY
-
-        # KEY FIX: if grounded (normal), do not accumulate gravity at all.
         if self.on_ground and not self.gravity_flipped:
             self.vy = 0.0
         else:
@@ -1000,11 +1012,8 @@ class Player:
     def draw(self, surf: pygame.Surface, cam: Camera):
         moving = (abs(self.vx) > 7) and self.on_ground
         spr, xoff, yoff = self.anim.get_frame(self.facing, self.on_ground, moving, self.vy)
-
-        # blink during i-frames
         if self.i_frames > 0 and int(self.i_frames * 20) % 2 == 0:
             return
-
         surf.blit(spr, (cam.world_to_screen_x(int(self.pos.x)) + xoff, int(self.pos.y) + yoff))
 
 
@@ -1021,12 +1030,8 @@ def platform_is_active(level: Level, rect: pygame.Rect):
 def resolve_physics(player: Player, level: Level, dt):
     died = False
 
-    # Save previous rect (for swept collisions)
     prev_rect = player.rect.copy()
 
-    # ----------------
-    # Move X + collide
-    # ----------------
     player.pos.x += player.vx * dt
     player.pos.x = clamp(player.pos.x, 0, level.world_w - player.rect.w)
     player.rect.x = int(player.pos.x)
@@ -1044,10 +1049,7 @@ def resolve_physics(player: Player, level: Level, dt):
                 player.pos.x = float(player.rect.x)
                 player.vx = 0.0
 
-    # ----------------
-    # Move Y + collide (SWEPT)
-    # ----------------
-    prev_rect = player.rect.copy()  # prev after X resolution
+    prev_rect = player.rect.copy()
     player.pos.y += player.vy * dt
     player.rect.y = int(player.pos.y)
 
@@ -1057,52 +1059,39 @@ def resolve_physics(player: Player, level: Level, dt):
         if not platform_is_active(level, p):
             continue
 
-        # must overlap in X to land/bump
         x_overlap = (player.rect.right > p.left) and (player.rect.left < p.right)
         if not x_overlap:
             continue
 
         if not player.gravity_flipped:
-            # --- LANDING (touch OR overlap) ---
             if player.vy >= 0 and prev_rect.bottom <= p.top and player.rect.bottom >= p.top:
                 player.rect.bottom = p.top
                 player.pos.y = float(player.rect.y)
                 player.vy = 0.0
                 player.on_ground = True
-
-            # --- HEAD BUMP ---
             elif player.vy <= 0 and prev_rect.top >= p.bottom and player.rect.top <= p.bottom:
                 player.rect.top = p.bottom
                 player.pos.y = float(player.rect.y)
                 player.vy = 0.0
-
         else:
-            # gravity flipped: "ground" is ceiling
-
-            # --- LANDING ON CEILING (touch OR overlap) ---
             if player.vy <= 0 and prev_rect.top >= p.bottom and player.rect.top <= p.bottom:
                 player.rect.top = p.bottom
                 player.pos.y = float(player.rect.y)
                 player.vy = 0.0
                 player.on_ground = True
-
-            # --- BUMP "FLOOR" (when flipped) ---
             elif player.vy >= 0 and prev_rect.bottom <= p.top and player.rect.bottom >= p.top:
                 player.rect.bottom = p.top
                 player.pos.y = float(player.rect.y)
                 player.vy = 0.0
 
-    # out of bounds
     if not player.gravity_flipped and player.rect.top > HEIGHT + 220:
         died = True
     if player.gravity_flipped and player.rect.bottom < -220:
         died = True
 
-    # i-frames ignore traps
     if player.i_frames > 0:
         return False
 
-    # traps
     for t in level.traps:
         if t.kind == "spikes" and player.rect.colliderect(t.rect):
             died = True
@@ -1166,7 +1155,6 @@ def resolve_physics(player: Player, level: Level, dt):
                 player.swap_jump = True
                 player.swap_jump_timer = JUMP_SWAP_DURATION
 
-    # projectiles
     for p in level.projectiles:
         pr = pygame.Rect(int(p.pos.x - p.radius), int(p.pos.y - p.radius), p.radius * 2, p.radius * 2)
         if player.rect.colliderect(pr):
@@ -1186,7 +1174,7 @@ def apply_panic_vision(surface, player_rect: pygame.Rect, cam: Camera):
 
 
 # ----------------------------
-# UI (kept procedural — it’s UI, not world geometry)
+# UI (unchanged)
 # ----------------------------
 def draw_ui(surface, font_big, font_small, hr, mode, level_idx, deaths, player: Player):
     panel = pygame.Rect(WIDTH - 455, 18, 430, 150)
@@ -1226,7 +1214,6 @@ def draw_ui(surface, font_big, font_small, hr, mode, level_idx, deaths, player: 
     t3 = font_small.render(f"Flash(Q): {flash}   Level: {level_idx}/3   Deaths: {deaths}", True, (255, 255, 255))
     surface.blit(t3, (panel.x + 18, panel.y + 110))
 
-    # bpm bar
     bar = pygame.Rect(panel.x + 18, panel.y + 132, 394, 10)
     pygame.draw.rect(surface, (35, 18, 55), bar, border_radius=10)
     delta = max(0, bpm - hr.baseline)
@@ -1261,7 +1248,6 @@ def baseline_input_screen(screen, font_title, font_big, font_small):
                         bpm_text += event.unicode
                     bpm_text = bpm_text[:3]
 
-        # simple animated background (use level1 parallax back as a menu bg)
         temp_cam = Camera()
         temp_cam.x = (t * 40) % WIDTH
         draw_parallax(screen, temp_cam, 1)
@@ -1297,8 +1283,15 @@ def baseline_input_screen(screen, font_title, font_big, font_small):
             txt = font_small.render(line, True, (240, 235, 255))
             screen.blit(txt, (info_x, info_y + i * 24))
 
+        # Show live bpm status (visual only)
+        if USE_LIVE_BPM_UDP:
+            hint2 = font_small.render(f"LIVE BPM UDP: ON (port {UDP_PORT})", True, (255, 255, 255))
+        else:
+            hint2 = font_small.render("LIVE BPM UDP: OFF", True, (255, 255, 255))
+        screen.blit(hint2, (panel.x + 34, panel.y + panel.h - 38))
+
         hint = font_small.render("ENTER = Start   ESC = Quit", True, (255, 255, 255))
-        screen.blit(hint, (panel.centerx - hint.get_width() // 2, panel.y + panel.h - 38))
+        screen.blit(hint, (panel.centerx - hint.get_width() // 2, panel.y + panel.h - 62))
 
         pygame.display.flip()
 
@@ -1308,11 +1301,15 @@ def baseline_input_screen(screen, font_title, font_big, font_small):
 # ----------------------------
 def main():
     pygame.init()
-    pygame.display.set_caption("Heartbeat Devil — Pixel Art Edition")
+    pygame.display.set_caption("Heartbeat Devil — Pixel Art Edition (Live BPM)")
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
-    # Load player
+    # Start live BPM receiver (optional)
+    bpm_rx = LiveBPMReceiver()
+    if USE_LIVE_BPM_UDP:
+        bpm_rx.start()
+
     player_img = load_image(PLAYER_PATH)
 
     font_title = pygame.font.SysFont("arial", 58, bold=True)
@@ -1340,9 +1337,11 @@ def main():
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                bpm_rx.stop()
                 pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    bpm_rx.stop()
                     pygame.quit(); sys.exit()
 
                 if event.key == KEY_RESPAWN:
@@ -1355,6 +1354,11 @@ def main():
                     hr.mode_override = "panic"
                 if event.key == KEY_FORCE_AUTO:
                     hr.mode_override = None
+
+        # Pull live bpm from receiver (if any)
+        if USE_LIVE_BPM_UDP:
+            latest = bpm_rx.latest_bpm()
+            hr.live_bpm = latest
 
         hr.update(dt, keys)
         mode = hr.mode()
@@ -1369,7 +1373,6 @@ def main():
                 player.respawn()
                 level.projectiles.clear()
 
-            # door logic
             for d in level.doors:
                 if d.fake and d.moves:
                     dist = abs(player.rect.centerx - d.rect.centerx) + abs(player.rect.centery - d.rect.centery)
@@ -1382,7 +1385,6 @@ def main():
                         player.respawn()
                         level.projectiles.clear()
 
-            # real door progression
             if player.rect.colliderect(level.real_door.rect):
                 if mode == "normal":
                     player.flash_charges += 1
@@ -1395,10 +1397,8 @@ def main():
                     player.set_spawn(level.spawn[0], level.spawn[1])
                     player.respawn()
 
-        # camera follow (visual)
         cam.update(player.rect.centerx, level.world_w)
 
-        # camera shake / zoom (kept)
         if mode == "stress":
             shake = 1
             zoom = 1.03
@@ -1416,11 +1416,9 @@ def main():
         sx = random.randint(-shake, shake) if shake else 0
         sy = random.randint(-shake, shake) if shake else 0
 
-        # draw
         world.fill((0, 0, 0, 0))
-        # draw level + player with camera; apply shake by temporary offset
         cam_shake = Camera()
-        cam_shake.x = cam.x - sx  # subtract to shake in screen space
+        cam_shake.x = cam.x - sx
         level.draw(world, cam_shake)
         player.draw(world, cam_shake)
 
@@ -1451,7 +1449,6 @@ def main():
                 hr.mode_override = None
                 level.projectiles.clear()
 
-        # zoom render
         if abs(zoom - 1.0) < 1e-3:
             screen.blit(world, (0, 0))
         else:
