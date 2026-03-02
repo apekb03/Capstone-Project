@@ -1,0 +1,17 @@
+[project]
+name = "capstone-project"
+version = "0.1.0"
+description = "Capstone project with Pulsoid heart rate streaming"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "certifi",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Scripts at project root (no package directory)
+only-include = ["pulsoid_heartrate.py", "main.py"]
