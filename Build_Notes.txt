@@ -1,4 +1,14 @@
 #Build change notes on rageBait.py
+(2/9/2026)
+using pygame.sprite.Sprite
+when using pygame sprites will always expect to have super().__init__()
+Pygame sprites always use .rect.x to track position
+
+
+
+
+
+
 For movement control currently using(2/9/2026):
 -----------------------------------------------------------------------
 #Keybinding
