@@ -1,7 +1,7 @@
 #Created 2/2/2026 11:02PM
 #Original Coder James Musick
 #In this code you should find game code for RageBait, CS450 Capstone project Team Joy
-#VERSION 0.1
+#VERSION 0.3
 import pygame
 import json
 
@@ -19,9 +19,11 @@ GROUND_LEVEL = 820
 PLATFORM_1 = 620
 PLATFORM_SPEED = 2
 
-screen = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT))
+SCREEN = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Rage Bait")
 
+clock = pygame.time.Clock()
+heartRate = 0
 
 #Player class===========================================
 class Player ( pygame.sprite.Sprite ):
@@ -37,142 +39,202 @@ class Player ( pygame.sprite.Sprite ):
 		self.image = pygame.Surface((self.width, self.height))
 		self.image.fill(self.color)
 
-		self.rect = self.image.get_rect()
-		self.rect.center = (x, y)
+		self.rect = self.image.get_rect(center=(x, y))
 
 		self.vel_x = 0
 		self.vel_y = 0
 		self.speed = 5
 		self.gravity = 2 #is based off of framerate
+		self.jumpForce = -15
 		self.isJumping = False
+	
+	def movement(self):
+		keys = pygame.key.get_pressed()
+		self.vel_x = 0
 
-	def update(self):
-		#apply gravity
-#		self.vel_y += self.gravity
-
-		self.rect.x += self.vel_x
-		self.rect.y += self.vel_y
-
-	def setDirection(self, direction):
-		if direction == "left":
+		if keys[pygame.K_LEFT]:
 			self.vel_x = -self.speed
-		elif direction == "right":
+		if keys[pygame.K_RIGHT]:
 			self.vel_x = self.speed
-		else:
-			self.vel_x = 0
+		if keys[pygame.K_SPACE] and not self.isJumping:
+			self.vel_y = self.jumpForce
+			self.isJumping = True
+	def grav(self):
+		self.vel_y += self.gravity
 
+	def collisionCheck(self, platforms):
+		self.rect.x += self.vel_x
+		for platform in platforms:
+			if self.rect.colliderect(platform):
+				if self.vel_x > 0: #moves right
+					self.rect.right = platform.left
+				elif self.vel_x < 0: #moves left
+					self.rect.left = platform.right
+		#Vertical collison
+		self.rect.y += self.vel_y
+		for platform in platforms:
+			if self.rect.colliderect(platform):
+				if self.vel_y > 0:
+					self.rect.bottom = platform.top
+					self.vel_y = 0
+					self.isJumping = False
+				elif self.vel_y < 0:
+					self.rect.top = platform.bottom
+					self.vel_y = 0
+
+	def update(self, platforms):
+		self.movement()
+		self.grav()
+		self.collisionCheck(platforms)
 
 player = Player(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
 all_sprites = pygame.sprite.Group(player)
+
 #=========================================================
-
-
-heartRate = 0
-#Main Game Loop
-clock = pygame.time.Clock()
-
-player = Player(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-all_sprites = pygame.sprite.Group(player)
 
 #========================================================
 
+def lvlSelect():
 
-#NOTE: THIS WILL LATER BE PLACED INTO A FUNCTION WHEN MENUS ARE EVENTUALLY ADDDED
-# PLAYER WILL ALSO GET ITS OWN CLASS IN THE FUTURE
-def lvlOne():
 	isRunning = True
 	while isRunning:
-		screen.fill(BLACK)
+		SCREEN.fill(BLACK)
 		delta_time = clock.tick(60) / 1000
 
+		#LVL one
+		pygame.draw.rect(SCREEN, (WHITE), (200, 200, 100, 100))
+		#melvins lvl 1 location
+		pygame.draw.rect(SCREEN, (WHITE), (400, 200, 100, 100))
+		#mel lvl 2
+		pygame.draw.rect(SCREEN, (WHITE), (600, 200, 100, 100))
+		#mel lvl 3
+		pygame.draw.rect(SCREEN, (WHITE), (800, 200, 100, 100))
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
-				isRunning = False
-
-	#Keybinding
-		keys = pygame.key.get_pressed()
-
-		player.vel_x = 0
-
-		if keys[pygame.K_LEFT]:
-			player.vel_x -= player.speed
-		if keys[pygame.K_RIGHT]:
-			player.vel_x += player.speed
-
-		all_sprites.update()
-		all_sprites.draw(screen)
-
-	#Platforms Arguments: for pygame.Rect(RGB Color), (x, y, width, height)
-		GROUND_LEVEL
-		pygame.draw.rect(screen, (0, 255, 0), (0, GROUND_LEVEL, SCREEN_WIDTH, 300))
-
-		PLATFORM_1
-		pygame.draw.rect(screen, (255, 0, 0), (1000, PLATFORM_1, 500, 50))
-
-
-	#Rendering text
-		heartRate_Text = FONT.render(f"HeartRate: {heartRate}", True, WHITE)
-
-	#Display
-		screen.blit(heartRate_Text, (10, 50))
-
+				levelSelect = False
 
 		pygame.display.flip()
 
 	pygame.quit()
+#====================================================================
+class Lvl:
+	def __init__(self):
 
-def lvlTwo():
-	isRunning = True
-	while isRunning:
-		screen.fill(BLACK)
-		delta_time = clock.tick(60) / 1000
+		self.player = Player(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)
 
-		for event in pygame.event.get():
+		self.all_sprites = pygame.sprite.Group(self.player)
+		self.platforms = []
+
+	def handleEvents(self, events):
+		for event in events:
 			if event.type == pygame.QUIT:
-				isRunning = False
+				return "quit"
 
+	def update(self):
+		self.all_sprites.update(self.platforms)
 
-def main_menu():
-	menu = True
-	while menu:
-		screen.fill(BLACK)
+	def draw(self):
+		SCREEN.fill(BLACK)
+		for platform in self.platforms:
+			pygame.draw.rect(SCREEN, (225, 0, 0), platform)
+		self.all_sprites.draw(SCREEN)
+#=====================================================
+class lvlOne(Lvl):
+	def __init__(self):
+		super().__init__()
+		self.ground = pygame.Rect(0, GROUND_LEVEL, SCREEN_WIDTH, 300)
+		self.platform = pygame.Rect(1000, PLATFORM_1, 500, 50)
+		self.platforms = [self.ground, self.platform]
 
-		TITLE = FONT.render("Heart Beat Devil", True, WHITE)
-		START_TEXT = FONT.render("Play", True, WHITE)
-		LEVEL_TEXT = FONT.render("Level Select", True, WHITE)
-		QUIT_TEXT = FONT.render("Quit", True, WHITE)
+	def draw(self):
+		SCREEN.fill(BLACK)
+		pygame.draw.rect(SCREEN,(0, 255, 0),self.ground)
+		pygame.draw.rect(SCREEN,(255, 0, 0),self.platform)
+		self.all_sprites.draw(SCREEN)
+		HEARTRATE = FONT.render(f"HeartRate: {heartRate}", True, WHITE)
+		SCREEN.blit(HEARTRATE,(10,50))
 
-		TITLE_RECT = TITLE.get_rect(center=(SCREEN_WIDTH//2 - 90, 120))
-		START_RECT = START_TEXT.get_rect(center=(SCREEN_WIDTH//2, 235))
-		LEVEL_RECT = LEVEL_TEXT.get_rect(center=(SCREEN_WIDTH//2, 295))
-		QUIT_RECT = QUIT_TEXT.get_rect(center=(SCREEN_WIDTH//2, 355))
+#============================================================================
+class lvlTwo(Lvl):
+	def __init__(self):
+		super().__init__()
+		self.ground = pygame.Rect(0, GROUND_LEVEL, SCREEN_WIDTH, 300)
+		self.platforms = [self.ground]
 
-		screen.blit(TITLE, TITLE_RECT)
-		screen.blit(START_TEXT, START_RECT)
-		screen.blit(LEVEL_TEXT, LEVEL_RECT)
-		screen.blit(QUIT_TEXT, QUIT_RECT)
+	def draw(self):
+		SCREEN.fill((30, 30, 80))
+		pygame.draw.rect(SCREEN, (0, 255, 0), self.ground)
+		text = FONT.render("Coming Soon", True, WHITE)
+		SCREEN.blit(text,(SCREEN_WIDTH//2-100, SCREEN_HEIGHT//2))
 
+		self.all_sprites.draw(SCREEN)
+#==============================================================================
+class MainMenu:
+	def __init__(self):
+		self.TITLE = FONT.render("Heart Beat Devil", True, WHITE)
+		self.START_TEXT = FONT.render("Play", True, WHITE)
+		self.LEVEL_TEXT = FONT.render("Level Selection", True, WHITE)
+		self.QUIT_TEXT = FONT.render("Quit", True, WHITE)
+
+		self.TITLE_RECT = self.TITLE.get_rect(center=(SCREEN_WIDTH//2-90, 120))
+		self.START_RECT = self.START_TEXT.get_rect(center=(SCREEN_WIDTH//2, 235))
+		self.LEVEL_RECT = self.LEVEL_TEXT.get_rect(center=(SCREEN_WIDTH//2, 295))
+		self.QUIT_RECT = self.QUIT_TEXT.get_rect(center=(SCREEN_WIDTH//2, 355))
+
+	def handleEvents(self, events):
 		mousePos = pygame.mouse.get_pos()
 		mouseClick = pygame.mouse.get_pressed()
 
-		if START_RECT.collidepoint(mousePos):
-			if mouseClick[0]:
-				lvlOne()
-				menu = False
-		if LEVEL_RECT.collidepoint(mousePos):
-			if mouseClick[0]:
-				lvlSelect()
-				menu = False
-		if QUIT_RECT.collidepoint(mousePos):
-			if mouseClick[0]:
-				pygame.quit()
-				quit()
-		for event in pygame.event.get():
+		for event in events:
 			if event.type == pygame.QUIT:
-				menu = False
-				pygame.quit()
-		pygame.display.update()
+				return "quit"
+
+		if self.START_RECT.collidepoint(mousePos) and mouseClick[0]:
+			return "level1"
+
+		if self.QUIT_RECT.collidepoint(mousePos) and mouseClick[0]:
+			return "quit"
+
+	def update(self):
+		pass
+
+	def draw(self):
+		SCREEN.fill(BLACK)
+
+		SCREEN.blit(self.TITLE, self.TITLE_RECT)
+		SCREEN.blit(self.START_TEXT, self.START_RECT)
+		SCREEN.blit(self.LEVEL_TEXT, self.LEVEL_RECT)
+		SCREEN.blit(self.QUIT_TEXT, self.QUIT_RECT)
+#=======================================================================================
+
+def main_menu():
+	currentState = MainMenu()
+
+	menu = True
+	while menu:
+
+		events = pygame.event.get()
+		result = None
+
+		if hasattr(currentState, "handleEvents"):
+			result = currentState.handleEvents(events)
+
+		if result == "quit":
+			menu  = False
+
+		elif result == "level1":
+			currentState = lvlOne()
+		elif result == "level2":
+			currentState = lvlTwo()
+
+		if hasattr(currentState, "update"):
+			currentState.update()
+
+		currentState.draw()
+		pygame.display.flip()
 		clock.tick(60)
+
+	pygame.quit()
 
 if __name__ == "__main__":
 	main_menu()

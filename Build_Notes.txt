@@ -1,3 +1,7 @@
+#Build Change notes on rageBait.py
+(3/4/2026) Ver 0.3
+Created a main menu system that makes use of the .collidepoint(mousePos) and mouseClick[0] to "start" , "quit" or "level selection". Level selection still needs to be converted to a class. Started thinking on how to make the code cleaner and keep it from breaking down as the code gets more complex. *Converted the levels into classes*. Moved the movement into the player class to be reused across levels. the game now has Gravity which can be found in the Player class and changed up how the collision detections works. ground is no longer considered different from a platform and is now considered its own platform known as "ground" and the floating platform is known as "platform"
+
 #Build change notes on rageBait.py
 (2/9/2026)
 using pygame.sprite.Sprite
