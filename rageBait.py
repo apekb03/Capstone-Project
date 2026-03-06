@@ -43,9 +43,9 @@ class Player ( pygame.sprite.Sprite ):
 
 		self.vel_x = 0
 		self.vel_y = 0
-		self.speed = 5
+		self.speed = 8
 		self.gravity = 2 #is based off of framerate
-		self.jumpForce = -15
+		self.jumpForce = -33 #-10 is the minimum to get off the ground
 		self.isJumping = False
 	
 	def movement(self):
@@ -93,29 +93,48 @@ all_sprites = pygame.sprite.Group(player)
 #=========================================================
 
 #========================================================
+class LevelSelection:
+	def __init__(self):
+		#note the arguments for < self.LVL1_RECT = pygame,Rect(200, 200, 150, 100) > are
+		#(x, y, width, height)
+		self.LVL1_RECT = pygame.Rect(200, 200, 150, 100)
+		self.LVL2_RECT = pygame.Rect(400, 200, 150, 100)
 
-def lvlSelect():
+	def handleEvents(self, events):
+		mousePos = pygame.mouse.get_pos()
+		mouseClick = pygame.mouse.get_pressed()
 
-	isRunning = True
-	while isRunning:
-		SCREEN.fill(BLACK)
-		delta_time = clock.tick(60) / 1000
-
-		#LVL one
-		pygame.draw.rect(SCREEN, (WHITE), (200, 200, 100, 100))
-		#melvins lvl 1 location
-		pygame.draw.rect(SCREEN, (WHITE), (400, 200, 100, 100))
-		#mel lvl 2
-		pygame.draw.rect(SCREEN, (WHITE), (600, 200, 100, 100))
-		#mel lvl 3
-		pygame.draw.rect(SCREEN, (WHITE), (800, 200, 100, 100))
-		for event in pygame.event.get():
+		for event in events:
 			if event.type == pygame.QUIT:
-				levelSelect = False
+				return "quit"
+		if self.LVL1_RECT.collidepoint(mousePos) and mouseClick[0]:
+			return "level1"
+		if self.LVL2_RECT.collidepoint(mousePos) and mouseClick[0]:
+			return "level2"
 
-		pygame.display.flip()
+	def update(self):
+		pass
+	def draw(self):
+		SCREEN.fill(BLACK)
 
-	pygame.quit()
+		#argument order as follows (screen width and hight, color of the rectangle, and then the object)
+		#simplifed (SCREEN, color, object)
+		pygame.draw.rect(SCREEN, WHITE, self.LVL1_RECT)
+		pygame.draw.rect(SCREEN, WHITE, self.LVL2_RECT)
+
+		lvl1TEXT = FONT.render("Level 1", True, BLACK)
+		lvl2TEXT = FONT.render("Level 2", True, BLACK)
+
+		SCREEN.blit(lvl1TEXT, (self.LVL1_RECT.x + 20, self.LVL1_RECT.y + 35))
+		SCREEN.blit(lvl2TEXT, (self.LVL2_RECT.x + 20, self.LVL2_RECT.y + 35))
+		#LVL one
+	#	pygame.draw.rect(SCREEN, (WHITE), (200, 200, 100, 100))
+		#melvins lvl 1 location
+	#	pygame.draw.rect(SCREEN, (WHITE), (400, 200, 100, 100))
+		#mel lvl 2
+	#	pygame.draw.rect(SCREEN, (WHITE), (600, 200, 100, 100))
+		#mel lvl 3
+	#	pygame.draw.rect(SCREEN, (WHITE), (800, 200, 100, 100))
 #====================================================================
 class Lvl:
 	def __init__(self):
@@ -139,7 +158,7 @@ class Lvl:
 			pygame.draw.rect(SCREEN, (225, 0, 0), platform)
 		self.all_sprites.draw(SCREEN)
 #=====================================================
-class lvlOne(Lvl):
+class LvlOne(Lvl):
 	def __init__(self):
 		super().__init__()
 		self.ground = pygame.Rect(0, GROUND_LEVEL, SCREEN_WIDTH, 300)
@@ -152,10 +171,10 @@ class lvlOne(Lvl):
 		pygame.draw.rect(SCREEN,(255, 0, 0),self.platform)
 		self.all_sprites.draw(SCREEN)
 		HEARTRATE = FONT.render(f"HeartRate: {heartRate}", True, WHITE)
-		SCREEN.blit(HEARTRATE,(10,50))
+		SCREEN.blit(HEARTRATE, (10,50))
 
 #============================================================================
-class lvlTwo(Lvl):
+class LvlTwo(Lvl):
 	def __init__(self):
 		super().__init__()
 		self.ground = pygame.Rect(0, GROUND_LEVEL, SCREEN_WIDTH, 300)
@@ -165,6 +184,9 @@ class lvlTwo(Lvl):
 		SCREEN.fill((30, 30, 80))
 		pygame.draw.rect(SCREEN, (0, 255, 0), self.ground)
 		text = FONT.render("Coming Soon", True, WHITE)
+		HEARTRATE = FONT.render(f"HeartRate: {heartRate}", True, WHITE)
+
+		SCREEN.blit(HEARTRATE, (10,50))
 		SCREEN.blit(text,(SCREEN_WIDTH//2-100, SCREEN_HEIGHT//2))
 
 		self.all_sprites.draw(SCREEN)
@@ -176,7 +198,7 @@ class MainMenu:
 		self.LEVEL_TEXT = FONT.render("Level Selection", True, WHITE)
 		self.QUIT_TEXT = FONT.render("Quit", True, WHITE)
 
-		self.TITLE_RECT = self.TITLE.get_rect(center=(SCREEN_WIDTH//2-90, 120))
+		self.TITLE_RECT = self.TITLE.get_rect(center=(SCREEN_WIDTH//2, 120))
 		self.START_RECT = self.START_TEXT.get_rect(center=(SCREEN_WIDTH//2, 235))
 		self.LEVEL_RECT = self.LEVEL_TEXT.get_rect(center=(SCREEN_WIDTH//2, 295))
 		self.QUIT_RECT = self.QUIT_TEXT.get_rect(center=(SCREEN_WIDTH//2, 355))
@@ -194,6 +216,9 @@ class MainMenu:
 
 		if self.QUIT_RECT.collidepoint(mousePos) and mouseClick[0]:
 			return "quit"
+
+		if self.LEVEL_RECT.collidepoint(mousePos) and mouseClick[0]:
+			return "lvlSelection"
 
 	def update(self):
 		pass
@@ -223,9 +248,11 @@ def main_menu():
 			menu  = False
 
 		elif result == "level1":
-			currentState = lvlOne()
+			currentState = LvlOne()
 		elif result == "level2":
-			currentState = lvlTwo()
+			currentState = LvlTwo()
+		elif result == "lvlSelection":
+			currentState = LevelSelection()
 
 		if hasattr(currentState, "update"):
 			currentState.update()

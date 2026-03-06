@@ -1,6 +1,27 @@
 #Build Change notes on rageBait.py
 (3/4/2026) Ver 0.3
-Created a main menu system that makes use of the .collidepoint(mousePos) and mouseClick[0] to "start" , "quit" or "level selection". Level selection still needs to be converted to a class. Started thinking on how to make the code cleaner and keep it from breaking down as the code gets more complex. *Converted the levels into classes*. Moved the movement into the player class to be reused across levels. the game now has Gravity which can be found in the Player class and changed up how the collision detections works. ground is no longer considered different from a platform and is now considered its own platform known as "ground" and the floating platform is known as "platform"
+Created a main menu system that makes use of the .collidepoint(mousePos) and mouseClick[0] to "start" , "quit" 
+or "level selection". Level selection still needs to be converted to a class. Started thinking on how to make 
+the code cleaner and keep it from breaking down as the code gets more complex. *Converted the levels into classes*.
+Moved the movement into the player class as a function <def movement(self):>
+to be reused across levels. the game now has Gravity which can be found 
+in the Player class and changed up how the collision detections works. ground is no longer considered 
+different from a platform and is now considered its own platform known as "ground" and the floating platform 
+is known as "platform". The level selection works almost identical to the main menu class.
+<def handleEvents(self, events):> handles mouse postion and mouse input. IF you are adding new levels you
+have to make sure you go into <class LevelSelection:> and in <def __init__(self):> add 
+self.LVL3_RECT = pygame.Rect(x, y, width, height). In the event handler you will need to create a new
+if statement like this < if self.LVL3_RECT.collidepoint(mousePos) and mouseClick[0]: > new line < return "level3"
+it is important that you remember the string used for later when you make the LvlThree class and when you update
+the main_menu(): function to update the currentState variable. It is good practice to name the classes in 
+PascalCase hence why the already established classes are <LvlOne()> in the <def draw(self):> function in the Level
+selection class make sure to draw the new rect with this example code replacing parts to match what you are trying
+to add <pygame.draw.rect(SCREEN, WHITE, self.LVL3_RECT)> then you'll need to render the font 
+<lvl3TEXT = FONT.render("Level 3", True, Black)> then make sure to actually draw it onto the screen with
+<SCREEN.blit(lvl3TEXT, (self.LVL3_RECT.x + 20, self.LVL3_RECT.y + 35))> That should create the level 3 box for
+the user to click in the level selector screen and once the currentState and LvlThree() class are created and 
+updated should load the LvlThree() class as the currentState.
+
 
 #Build change notes on rageBait.py
 (2/9/2026)
