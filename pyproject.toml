@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "certifi",
+    "firebase-admin",
+    "streamlit",
 ]
 
 [build-system]
