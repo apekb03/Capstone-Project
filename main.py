@@ -5,10 +5,26 @@ import math
 import socket
 import threading
 import json
+import time
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 
 import pygame
+
+# ----------------------------
+# WEBCAM EMOTION CONFIG
+# ----------------------------
+try:
+    import cv2
+    import numpy as np
+    from deepface import DeepFace
+    import logging
+    # Suppress TensorFlow logs for a cleaner console
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+    HAS_WEBCAM_DEPS = True
+except ImportError:
+    HAS_WEBCAM_DEPS = False
 
 # ============================================================
 # Heartbeat Devil — Pixel Art + Parallax + Longer Levels + Live Biometrics
@@ -130,8 +146,6 @@ def load_image(path: str, alpha=True):
     if path in _ASSET_CACHE:
         return _ASSET_CACHE[path]
     if not os.path.exists(path):
-        # Fallback to create a colored square if asset missing (prevents crash during dev)
-        # print(f"Warning: Asset not found {path}, creating placeholder.")
         surf = pygame.Surface((32, 32))
         surf.fill((255, 0, 255))
         return surf
@@ -207,14 +221,12 @@ class MultiInputReceiver:
 
     def _parse_bpm(self, msg: str):
         """Attempts to extract a number from the string."""
-        # JSON format: {"bpm": 82}
         if msg.startswith("{") and "bpm" in msg.lower():
             try:
                 obj = json.loads(msg)
                 return int(float(obj.get("bpm", 0)))
             except: pass
         
-        # Key-Value format: "BPM:82"
         if ":" in msg:
             parts = msg.split(":")
             for p in reversed(parts):
@@ -222,7 +234,6 @@ class MultiInputReceiver:
                 if clean:
                     return int(float(clean))
         
-        # Raw number: "82"
         clean = "".join(c for c in msg if c.isdigit() or c == '.')
         if clean:
             return int(float(clean))
@@ -242,12 +253,9 @@ class MultiInputReceiver:
                 data, _addr = sock.recvfrom(512)
                 msg = data.decode("utf-8", errors="ignore").strip().upper()
                 
-                # Check for Emotion Keywords first
-                # Added SURPRISED/SAD/FEAR to ensure we catch stress states
                 valid_emotions = ["HAPPY", "NEUTRAL", "SAD", "ANGRY", "FEAR", "SURPRISED"]
                 found_emotion = False
                 
-                # Simple substring check (robust against "Emotion: HAPPY" vs "HAPPY")
                 for emo in valid_emotions:
                     if emo in msg:
                         with self._lock:
@@ -255,7 +263,6 @@ class MultiInputReceiver:
                         found_emotion = True
                         break
                 
-                # If it wasn't an emotion, try parsing as BPM
                 if not found_emotion:
                     bpm = self._parse_bpm(msg)
                     if bpm is not None:
@@ -269,6 +276,205 @@ class MultiInputReceiver:
                 continue
 
 
+class WebcamEmotionReceiver:
+    """
+    Handles live webcam feed to perform Facial Expression Recognition
+    in a background thread using OpenCV and DeepFace.
+    Improved version: Fast Haar cascade detection, padded crops, AI bias correction, smoothing, and confidence filtering.
+    """
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._latest_emotion = "NEUTRAL"
+        self._latest_frame_array = None # Stores raw numpy array to avoid Pygame threading crashes
+        self._lock = threading.Lock()
+        
+        # History for emotion smoothing to stop flickering
+        self._emotion_history = []
+        self._history_max_len = 5
+
+    def start(self):
+        if not HAS_WEBCAM_DEPS:
+            return
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.5)
+
+    def get_data(self):
+        """Returns the latest emotion and safely generates the camera preview surface."""
+        with self._lock:
+            emo = self._latest_emotion
+            arr = self._latest_frame_array
+            
+        surf = None
+        # Make the pygame surface inside the MAIN thread to prevent SDL/Pygame crashes
+        if arr is not None:
+            try:
+                surf = pygame.surfarray.make_surface(arr)
+            except Exception:
+                pass
+                
+        return emo, surf
+
+    def _run(self):
+        # CAP_DSHOW makes camera initialization instant on Windows
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) if os.name == 'nt' else cv2.VideoCapture(0)
+        
+        if not cap.isOpened():
+            print("Webcam Error: Could not open camera. Trying fallback...")
+            cap = cv2.VideoCapture(0) # fallback
+            if not cap.isOpened():
+                print("Webcam Error: Completely failed to open camera.")
+                return
+
+        # Load OpenCV Haar Cascade for fast face detection
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+
+        last_analyze_time = 0
+        analyze_interval = 0.35 # Throttle DeepFace to ~3 FPS for performance
+        
+        raw_emotion = "NONE"
+        stable_emotion = "NEUTRAL"
+        last_conf = 0.0
+        no_face_time = time.time()
+
+        # Multipliers to combat DeepFace's natural bias towards neutral/happy
+        boost_factors = {
+            'angry': 2.5,     # Heavily boost angry (fixes missing angry face)
+            'disgust': 2.0,
+            'fear': 2.0,
+            'sad': 1.5,
+            'surprise': 1.2,
+            'happy': 0.9,     # Slightly penalize happy
+            'neutral': 0.8    # Penalize neutral
+        }
+
+        while not self._stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            
+            # Flip horizontally for a natural mirror effect
+            frame = cv2.flip(frame, 1)
+            
+            # 1. Preprocessing & Fast Face Detection
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray) # Improve contrast for detection in bad lighting
+            
+            # Detect faces
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
+            current_time = time.time()
+
+            if len(faces) > 0:
+                no_face_time = current_time
+                
+                # Pick the largest face by area (width * height) in case of background faces
+                largest_face = max(faces, key=lambda rect: rect[2] * rect[3])
+                x, y, w, h = largest_face
+                
+                # Draw bounding box (Debug Overlay)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 255), 2)
+                
+                # 2. Analyze Emotion with DeepFace (Throttled)
+                if current_time - last_analyze_time > analyze_interval:
+                    last_analyze_time = current_time
+                    
+                    # Add BETTER padding (Eyebrows are crucial for 'angry' detection!)
+                    pad_top = int(h * 0.35)    # 35% extra space above for forehead/eyebrows
+                    pad_bottom = int(h * 0.15) # 15% extra below for chin/jaw
+                    pad_x = int(w * 0.20)      # 20% extra on sides
+                    
+                    y1 = max(0, y - pad_top)
+                    y2 = min(frame.shape[0], y + h + pad_bottom)
+                    x1 = max(0, x - pad_x)
+                    x2 = min(frame.shape[1], x + w + pad_x)
+                    
+                    face_crop = frame[y1:y2, x1:x2]
+                    
+                    try:
+                        # enforce_detection=False because we already cropped a valid face via Haar
+                        result = DeepFace.analyze(
+                            face_crop, 
+                            actions=['emotion'], 
+                            enforce_detection=False,
+                            silent=True
+                        )
+                        if isinstance(result, list):
+                            result = result[0]
+                        
+                        emotion_dict = result.get('emotion', {})
+                        if emotion_dict:
+                            # Apply weighting to combat AI bias
+                            boosted_emotions = {}
+                            for emo, score in emotion_dict.items():
+                                boosted_emotions[emo] = score * boost_factors.get(emo.lower(), 1.0)
+                            
+                            # Find the NEW dominant emotion based on boosted scores
+                            dom_emotion = max(boosted_emotions, key=boosted_emotions.get).upper()
+                            
+                            # Get the original true confidence percentage for display
+                            conf = emotion_dict.get(dom_emotion.lower(), 0.0)
+                            
+                            # Confidence threshold (Ensure the base score isn't a total hallucination)
+                            if conf > 5.0: 
+                                raw_emotion = dom_emotion
+                                last_conf = conf
+                                
+                                # 3. Smoothing / History
+                                self._emotion_history.append(raw_emotion)
+                                if len(self._emotion_history) > self._history_max_len:
+                                    self._emotion_history.pop(0)
+                                    
+                                # Find the most common emotion in history (Mode)
+                                stable_emotion = Counter(self._emotion_history).most_common(1)[0][0]
+                    except Exception:
+                        pass # Ignore frames where analysis randomly fails
+
+                # Debug Overlay Text
+                cv2.putText(frame, f"Raw: {raw_emotion} ({last_conf:.1f}%)", (x, max(20, y - 25)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+                cv2.putText(frame, f"Stable: {stable_emotion}", (x, max(45, y - 5)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 100), 2)
+
+            else:
+                # No face detected handling
+                cv2.putText(frame, "NO FACE DETECTED", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # Revert to neutral if face is lost for too long (> 1.5 seconds)
+                if current_time - no_face_time > 1.5:
+                    stable_emotion = "NEUTRAL"
+                    raw_emotion = "NONE"
+                    last_conf = 0.0
+                    self._emotion_history.clear()
+
+            # Update the shared state with the smoothed emotion
+            with self._lock:
+                self._latest_emotion = stable_emotion
+            
+            # --- Create a Live Preview for the User Interface ---
+            try:
+                preview = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                preview = cv2.resize(preview, (240, 180)) # Size of the facecam UI
+                # Pygame requires the array to be (Width, Height, Colors)
+                preview = np.swapaxes(preview, 0, 1)
+                
+                # Safely update variables for the main thread
+                with self._lock:
+                    self._latest_frame_array = preview
+            except Exception:
+                pass
+
+        cap.release()
+
+
 class BiometricController:
     """
     Manages game difficulty state based on the selected InputMode.
@@ -276,35 +482,27 @@ class BiometricController:
     def __init__(self, settings: GameSettings):
         self.settings = settings
         
-        # BPM State
         self.baseline = settings.baseline_bpm
         self.current_bpm = float(settings.baseline_bpm)
         self._bpm_timer = 0.0
         
-        # Emotion State
         self.current_emotion = "NEUTRAL"
         
-        # Overrides (I/O/U keys)
         self.mode_override = None
 
     def update(self, dt, keys, latest_bpm, latest_emotion):
-        # Update raw values
         self.current_emotion = latest_emotion
         
-        # Manual BPM tweak always works for testing
         if keys[KEY_HR_UP]:
             self.current_bpm += 60 * dt
         if keys[KEY_HR_DOWN]:
             self.current_bpm -= 60 * dt
 
-        # Heart Rate Logic
         if self.settings.input_type == InputMode.HEART_RATE:
             if latest_bpm is not None:
-                # Smoothly move towards live BPM
                 target = float(latest_bpm)
                 self.current_bpm += (target - self.current_bpm) * min(1.0, dt * 8.0)
             else:
-                # Simulated drift if no signal
                 self._bpm_timer += dt
                 if self._bpm_timer > 1.0:
                     self._bpm_timer = 0.0
@@ -312,34 +510,26 @@ class BiometricController:
                         target = self.baseline + random.uniform(12, 30)
                     else:
                         target = self.baseline + random.uniform(-6, 12)
-                    # We don't apply target directly in drift, just simulated jitter
-                    # (Simplified: just keep current stable-ish if no input)
             
             self.current_bpm = clamp(self.current_bpm, 45, 190)
 
     def get_mode(self):
-        # Manual Overrides check
         if self.mode_override == "panic":
             return "panic"
         if self.mode_override == "stress":
             return "stress"
         
-        # Logic based on Input Type
         if self.settings.input_type == InputMode.EMOTION:
-            # MAPPING:
-            # Happy / Neutral -> Normal
-            # Sad / Fear / Surprised -> Stress
-            # Angry -> Panic
+            # MAPPING (added DISGUST which deepface can output):
             if self.current_emotion in ["HAPPY", "NEUTRAL"]:
                 return "normal"
-            elif self.current_emotion in ["SAD", "FEAR", "SURPRISED"]:
+            elif self.current_emotion in ["SAD", "FEAR", "SURPRISED", "DISGUST"]:
                 return "stress"
             elif self.current_emotion == "ANGRY":
                 return "panic"
             return "normal"
 
         else:
-            # Default: Heart Rate Logic
             b = int(round(self.current_bpm))
             if b > self.baseline + PANIC_DELTA:
                 return "panic"
@@ -361,7 +551,6 @@ class Camera:
         self.x = 0.0
 
     def update(self, target_x: float, world_w: int):
-        # follow player horizontally; keep 40% lead room
         desired = target_x - WIDTH * 0.45
         self.x = clamp(desired, 0, max(0, world_w - WIDTH))
 
@@ -532,12 +721,8 @@ def draw_spikes_pixel(dst: pygame.Surface, cam: Camera, rect: pygame.Rect, t=0.0
 
 
 def draw_laser_pixel(dst: pygame.Surface, cam: Camera, rect: pygame.Rect, t: float):
-    """FIXED: Laser now scrolls vertically."""
     raw_tex = load_image(LASER_TEX)
-    # Rotate texture so pattern flows vertically
     tex = pygame.transform.rotate(raw_tex, 90)
-    
-    # Scale: keep roughly same thickness relative to original
     scaled_tex = pygame.transform.smoothscale(tex, (int(tex.get_width() * 0.1), int(tex.get_height() * 0.1)))
 
     sx = cam.world_to_screen_x(rect.x)
@@ -546,14 +731,10 @@ def draw_laser_pixel(dst: pygame.Surface, cam: Camera, rect: pygame.Rect, t: flo
 
     scroll_speed = 45 
     scroll = int((t * scroll_speed) % scaled_tex.get_height())
-    
-    # Calculate X position to center the laser beam in the rect
     tx = sx + (rect.w - scaled_tex.get_width()) // 2
     
-    # Draw loop along Y axis
     y = rect.y - scroll
     while y < rect.y + rect.h:
-        # Clip if it goes outside the rect boundaries
         draw_y = max(y, rect.y)
         draw_h = min(scaled_tex.get_height(), rect.y + rect.h - y) - (draw_y - y)
         
@@ -652,7 +833,6 @@ class Level:
 
         def T(rect, kind, **kw):
             tr = Trap(rect, kind, **kw)
-            # FIX 1: initialize base_x so shifting walls know where they started
             tr.base_x = rect.x 
             tr.base_y = rect.y
             self.traps.append(tr)
@@ -664,7 +844,6 @@ class Level:
 
         # LEVEL 1
         if idx == 1:
-            # Shortened Level 1 to avoid empty gap
             self.world_w = 6000 
             
             P(560, HEIGHT - 170, 110)
@@ -687,9 +866,7 @@ class Level:
             P(2050, HEIGHT - 270, 90)
 
             P(2300, HEIGHT - 210, 90)
-            # This wall will now move relative to its spawn point (2570)
             T(pygame.Rect(2570, HEIGHT - 245, 34, 34), "shifting_wall", active=True, speed=260, dir=-1)
-            # T(pygame.Rect(2640, HEIGHT - 110, 240, 32), "spikes")
             P(2920, HEIGHT - 290, 180)
 
             T(pygame.Rect(3120, HEIGHT - 520, 520, 360), "input_swap_zone")
@@ -707,7 +884,6 @@ class Level:
             fb2 = T(pygame.Rect(4850, 160, 70, 70), "falling_block", active=True)
             fb2.base_x, fb2.base_y = fb2.rect.x, fb2.rect.y
 
-            # Moved the final section significantly closer (was at world_w - 520)
             final_base_x = 5100
             P(final_base_x, HEIGHT - 210, 220)
             P(final_base_x + 60, HEIGHT - 210, 200)
@@ -723,25 +899,28 @@ class Level:
             P(535, HEIGHT - 110, 10)
             cf3 = T(pygame.Rect(600, HEIGHT - 235, 30, 18), "collapsing_floor", active=True)
             self.platforms.append(cf3.rect)
-            # P(600, HEIGHT - 235, 30)
             T(pygame.Rect(800, 0, 18, HEIGHT), "laser", active=True)
             P(980, HEIGHT - 95, 10)
             T(pygame.Rect(1040, 0, 18, HEIGHT), "laser", active=True)
             cf4 = T(pygame.Rect(1080, HEIGHT - 210, 10, 18), "collapsing_floor", active=True)
             self.platforms.append(cf4.rect)
-            # P(1080, HEIGHT - 210, 10)
 
             P(1200, HEIGHT - 300, 60)
-            # crusher = T(pygame.Rect(1200, HEIGHT - 280, 60, 78), "rising_pit", active=False)
-            # crusher.base_x, crusher.base_y = crusher.rect.x, crusher.rect.y
-            # T(pygame.Rect(1200, HEIGHT - 270, 140, 150), "trigger_rising_pit")
 
             P(1320, HEIGHT - 435, 180)
-            hs3 = T(pygame.Rect(1340, HEIGHT - 435, 60, 18), "hidden_spikes", active=False)
+            T(pygame.Rect(1370, HEIGHT - 460, 180, 80), "trigger_hidden_spikes")
+            hs3 = T(pygame.Rect(1370, HEIGHT - 450, 60, 18), "hidden_spikes", active=False)
             hs3.cooldown = 3.0
 
-            cf5 = T(pygame.Rect(1980, HEIGHT - 250, 180, 18), "collapsing_floor", active=True)
+            cf5 = T(pygame.Rect(1580, HEIGHT - 250, 50, 18), "collapsing_floor", active=True)
             self.platforms.append(cf5.rect)
+            P(1580, HEIGHT - 350, 10)
+            T(pygame.Rect(1580, HEIGHT - 460, 180, 80), "trigger_hidden_spikes")
+            hs4 = T(pygame.Rect(1580, HEIGHT - 350, 10, 18), "hidden_spikes", active=False)
+            hs4.cooldown = 3.0
+
+            P(1880, HEIGHT - 250, 110)
+            
             T(pygame.Rect(1980, HEIGHT - 110, 200, 32), "spikes")
 
             P(2300, HEIGHT - 360, 160)
@@ -820,10 +999,6 @@ class Level:
             self.zoom_troll_zone = pygame.Rect(self.world_w - 1050, HEIGHT - 560, 920, 460)
 
     def update(self, dt, player):
-        """
-        Updates level elements.
-        RETURNS: True if player died (e.g. crushed), False otherwise.
-        """
         self.level_time += dt
         player_died = False
 
@@ -836,67 +1011,48 @@ class Level:
                 t.active = phase < on_time
 
             elif t.kind == "shifting_wall":
-                # --- NEW PHYSICS LOGIC ---
-                # 1. Calculate how much the wall WANTS to move
                 move_amt = int(t.dir * t.speed * dt)
 
-                # 2. RIDING LOGIC: Check if player is standing on this wall
-                # Conditions: On ground, feet near top of wall, horizontally within wall bounds
                 is_riding = False
                 if player.on_ground:
-                    # Vertical alignment check (small epsilon for float errors)
                     if abs(player.rect.bottom - t.rect.top) <= 4:
-                        # Horizontal alignment check
                         if player.rect.right > t.rect.left and player.rect.left < t.rect.right:
                             is_riding = True
 
-                # 3. Move the wall
                 t.rect.x += move_amt
 
-                # Bounds check (reverse direction)
                 if t.rect.x < t.base_x - 140:
                     t.rect.x = t.base_x - 140
                     t.dir = 1
                 elif t.rect.x > t.base_x + 140:
                     t.rect.x = t.base_x + 140
                     t.dir = -1
-
-                # 4. Apply Effects to Player
                 
-                # A) RIDING: Move player with the wall
                 if is_riding:
                     player.pos.x += move_amt
                     player.rect.x = int(player.pos.x)
                     
-                    # Optional: Check if riding pushed player into a static ceiling/wall (crush)
                     for p in self.platforms:
                         if player.rect.colliderect(p):
-                            # If we rode into a solid block, that's a crush
                             player_died = True
 
-                # B) PUSHING: Wall moved INTO the player (Lateral collision)
                 elif player.rect.colliderect(t.rect):
-                    # Displace player based on wall direction
-                    if move_amt > 0: # Moving Right -> Push Player Right
+                    if move_amt > 0: 
                         player.rect.left = t.rect.right
-                    elif move_amt < 0: # Moving Left -> Push Player Left
+                    elif move_amt < 0: 
                         player.rect.right = t.rect.left
                     
-                    # Update float position to match new rect
                     player.pos.x = float(player.rect.x)
                     
-                    # C) CRUSHING: Check if pushed into static geometry
                     for p in self.platforms:
                         if player.rect.colliderect(p):
                             player_died = True
                     
-                    # Also check world bounds if pushed off map
                     if player.rect.right < 0 or player.rect.left > self.world_w:
                         player_died = True
 
             elif t.kind == "collapsing_floor":
                 if t.triggered and t.active:
-                    # Delay timer logic
                     if t.cooldown == 0: t.cooldown = 0.001 
                     else: t.cooldown += dt
                     
@@ -989,19 +1145,16 @@ class Level:
             elif t.kind == "laser" and t.active:
                 draw_laser_pixel(surf, cam, t.rect, t.t)
             elif t.kind == "shifting_wall":
-                # --- DRAWING LOGIC ---
                 wall_tex = load_image(SHIFTING_WALL_TEX)
                 
                 sx = cam.world_to_screen_x(t.rect.x)
                 if not (sx > WIDTH or sx + t.rect.w < 0):
-                    # Draw the shifting wall texture instead of tiles
                     scaled_tex = pygame.transform.smoothscale(wall_tex, (t.rect.w, t.rect.h))
                     surf.blit(scaled_tex, (sx, t.rect.y))
             elif t.kind == "collapsing_floor":
                 if t.active:
                     sx = cam.world_to_screen_x(t.rect.x)
                     if not (sx > WIDTH or sx + t.rect.w < 0):
-                        # Shake effect if about to fall
                         offset_x = 0
                         if t.triggered:
                             offset_x = random.randint(-2, 2)
@@ -1206,15 +1359,12 @@ def resolve_physics(player: Player, level: Level, dt):
     player.pos.x = clamp(player.pos.x, 0, level.world_w - player.rect.w)
     player.rect.x = int(player.pos.x)
 
-    # Collect all collidables: static platforms + moving walls
-    # (Walls are treated as solid static objects during player movement)
     collidables = level.platforms[:]
     for t in level.traps:
         if t.kind == "shifting_wall":
             collidables.append(t.rect)
 
     for p in collidables:
-        # Special check for active/inactive traps (e.g. collapsing floor)
         is_active = True
         for tr in level.traps:
             if tr.rect == p and tr.kind == "collapsing_floor" and not tr.active:
@@ -1281,7 +1431,6 @@ def resolve_physics(player: Player, level: Level, dt):
     if player.i_frames > 0:
         return False
 
-    # Check dangerous traps (Spikes, Lasers, etc)
     for t in level.traps:
         if t.kind == "spikes" and player.rect.colliderect(t.rect):
             died = True
@@ -1299,7 +1448,6 @@ def resolve_physics(player: Player, level: Level, dt):
             died = True
 
         if t.kind == "collapsing_floor":
-            # Check 1 pixel below (or above if flipped) to detect 'standing on'
             check_rect = player.rect.move(0, 1 if not player.gravity_flipped else -1)
             if t.active and player.on_ground and check_rect.colliderect(t.rect):
                 t.triggered = True
@@ -1330,18 +1478,13 @@ def resolve_physics(player: Player, level: Level, dt):
             died = True
 
         if t.kind == "gravity_flip_zone" and player.rect.colliderect(t.rect):
-            # FIXED: Refresh timer constantly while inside zone
             player.gravity_flipped = True
-            player.gravity_flip_timer = 0.07 # Lasts 2s after leaving the zone
+            player.gravity_flip_timer = 0.07 
 
         if t.kind == "input_swap_zone" and player.rect.colliderect(t.rect):
             if not player.swap_lr:
                 player.swap_lr = True
                 player.swap_lr_timer = INPUT_SWAP_DURATION
-            # Removed jump swapping as requested
-            # if not player.swap_jump:
-            #     player.swap_jump = True
-            #     player.swap_jump_timer = JUMP_SWAP_DURATION
 
     for p in level.projectiles:
         pr = pygame.Rect(int(p.pos.x - p.radius), int(p.pos.y - p.radius), p.radius * 2, p.radius * 2)
@@ -1364,7 +1507,7 @@ def apply_panic_vision(surface, player_rect: pygame.Rect, cam: Camera):
 # ----------------------------
 # UI
 # ----------------------------
-def draw_ui(surface, font_big, font_small, controller: BiometricController, mode, level_idx, deaths, player: Player, training_mode: bool):
+def draw_ui(surface, font_big, font_small, controller: BiometricController, mode, level_idx, deaths, player: Player, training_mode: bool, webcam_surf: pygame.Surface = None):
     panel = pygame.Rect(WIDTH - 455, 18, 430, 150)
 
     glass = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
@@ -1384,13 +1527,11 @@ def draw_ui(surface, font_big, font_small, controller: BiometricController, mode
         color = (255, 140, 230)
         mode_color = (255, 80, 255)
 
-    # Dynamic Label based on input mode
     if controller.settings.input_type == InputMode.HEART_RATE:
         label_text = f"Heart Beat: {val}"
         info_text = f"Base: {controller.baseline} | Panic > {controller.baseline + PANIC_DELTA}"
     else:
         label_text = f"Emotion: {val}"
-        # Updated UI to show the 3 states clearly
         info_text = "Happy=OK | Sad=Stress | Angry=Panic"
 
     t1 = font_big.render(label_text, True, color)
@@ -1408,7 +1549,6 @@ def draw_ui(surface, font_big, font_small, controller: BiometricController, mode
     t3 = font_small.render(f"Flash(Q): {flash}   Level: {level_idx}/3   Deaths: {deaths}", True, (255, 255, 255))
     surface.blit(t3, (panel.x + 18, panel.y + 110))
 
-    # Stress Bar (Only relevant for Heart Rate Mode mainly, but we can fake it for Emotion)
     bar = pygame.Rect(panel.x + 18, panel.y + 132, 394, 10)
     pygame.draw.rect(surface, (35, 18, 55), bar, border_radius=10)
     
@@ -1416,9 +1556,8 @@ def draw_ui(surface, font_big, font_small, controller: BiometricController, mode
         delta = max(0, val - controller.baseline)
         fill = int(clamp(delta / 30.0, 0, 1) * bar.w)
     else:
-        # Visual bar for emotion intensity
         fill = 0
-        if val in ["SAD", "FEAR", "SURPRISED"]: fill = int(bar.w * 0.5)
+        if val in ["SAD", "FEAR", "SURPRISED", "DISGUST"]: fill = int(bar.w * 0.5)
         if val == "ANGRY": fill = bar.w
         
     pygame.draw.rect(surface, (255, 0, 255), (bar.x, bar.y, fill, bar.h), border_radius=10)
@@ -1427,25 +1566,25 @@ def draw_ui(surface, font_big, font_small, controller: BiometricController, mode
         tr_txt = font_small.render("[TRAINING MODE]", True, (50, 255, 100))
         surface.blit(tr_txt, (panel.x + panel.w - tr_txt.get_width() - 10, panel.y + 10))
 
+    # --- Draw the Webcam Feed if it exists ---
+    if webcam_surf is not None:
+        cam_rect = pygame.Rect(panel.x + panel.w - 240, panel.y + panel.h + 10, 240, 180)
+        surface.blit(webcam_surf, (cam_rect.x, cam_rect.y))
+        pygame.draw.rect(surface, (255, 0, 255), cam_rect, width=2, border_radius=4)
+
 
 # ----------------------------
 # SCREENS (Mode Select & Baseline)
 # ----------------------------
 def mode_selection_screen(screen, font_title, font_big):
-    """
-    New start screen to choose between Heart Rate and Emotion mode.
-    Includes mouse support for clicking options.
-    Returns: (InputMode, training_mode_boolean)
-    """
     clock = pygame.time.Clock()
     t = 0.0
     training_mode = False
 
-    # Define the rectangles for mouse interaction (approximate positions)
     cx, cy = WIDTH // 2, HEIGHT // 2
     rect1 = pygame.Rect(cx - 200, 280, 400, 80)
     rect2 = pygame.Rect(cx - 200, 380, 400, 80)
-    rect_train = pygame.Rect(cx - 200, 480, 400, 50) # Toggle button
+    rect_train = pygame.Rect(cx - 200, 480, 400, 50) 
 
     while True:
         dt = clock.tick(FPS) / 1000.0
@@ -1457,7 +1596,6 @@ def mode_selection_screen(screen, font_title, font_big):
             if event.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
             
-            # Keyboard Support
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
                     return InputMode.HEART_RATE, training_mode
@@ -1468,9 +1606,8 @@ def mode_selection_screen(screen, font_title, font_big):
                 if event.key == pygame.K_ESCAPE:
                     pygame.quit(); sys.exit()
             
-            # Mouse Support
             if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1: # Left Click
+                if event.button == 1: 
                     if rect1.collidepoint(mx, my):
                         return InputMode.HEART_RATE, training_mode
                     if rect2.collidepoint(mx, my):
@@ -1478,23 +1615,18 @@ def mode_selection_screen(screen, font_title, font_big):
                     if rect_train.collidepoint(mx, my):
                         training_mode = not training_mode
 
-        # Background effect
         screen.fill((10, 5, 20))
         temp_cam = Camera()
         temp_cam.x = (t * 20) % WIDTH
         draw_parallax(screen, temp_cam, 1)
 
-        # Draw UI
         title = font_title.render("HEARTBEAT DEVIL", True, (255, 0, 255))
         screen.blit(title, (cx - title.get_width() // 2, 80))
 
         opt_title = font_big.render("SELECT INPUT MODE", True, (255, 255, 255))
         screen.blit(opt_title, (cx - opt_title.get_width() // 2, 180))
 
-        # Option 1 (Heart Rate)
-        # Check hover
         color1 = (230, 255, 230) if rect1.collidepoint(mx, my) else (150, 220, 150)
-        # Visual Box
         pygame.draw.rect(screen, (30, 40, 30), rect1, border_radius=12)
         pygame.draw.rect(screen, color1, rect1, width=2, border_radius=12)
         
@@ -1503,25 +1635,25 @@ def mode_selection_screen(screen, font_title, font_big):
         desc1 = pygame.font.SysFont("arial", 20).render("Uses UDP or Manual Key Input", True, (200, 200, 200))
         screen.blit(desc1, (rect1.centerx - desc1.get_width() // 2, rect1.centery + 15))
 
-        # Option 2 (Emotion)
         color2 = (230, 230, 255) if rect2.collidepoint(mx, my) else (150, 150, 220)
-        # Visual Box
         pygame.draw.rect(screen, (30, 30, 40), rect2, border_radius=12)
         pygame.draw.rect(screen, color2, rect2, width=2, border_radius=12)
 
         txt2 = font_big.render("2. Facial Emotion", True, color2)
         screen.blit(txt2, (rect2.centerx - txt2.get_width() // 2, rect2.centery - 25))
-        desc2 = pygame.font.SysFont("arial", 20).render("Happy=OK, Sad=Stress, Angry=Panic", True, (200, 200, 200))
+        
+        if HAS_WEBCAM_DEPS:
+            desc2 = pygame.font.SysFont("arial", 20).render("Uses Webcam (DeepFace) or UDP", True, (200, 200, 200))
+        else:
+            desc2 = pygame.font.SysFont("arial", 20).render("Requires 'pip install opencv-python deepface'", True, (255, 100, 100))
         screen.blit(desc2, (rect2.centerx - desc2.get_width() // 2, rect2.centery + 15))
         
-        # Training Mode Toggle
         col_tr = (100, 255, 100) if training_mode else (100, 100, 100)
         bg_tr = (20, 50, 20) if training_mode else (30, 30, 30)
         pygame.draw.rect(screen, bg_tr, rect_train, border_radius=8)
         pygame.draw.rect(screen, col_tr, rect_train, width=2, border_radius=8)
         
         tr_status = "ON" if training_mode else "OFF"
-        # Resize font for this button to fit
         tr_txt_small = pygame.font.SysFont("arial", 30, bold=True).render(f"Training Mode (Checkpoints): {tr_status}", True, col_tr)
         screen.blit(tr_txt_small, (rect_train.centerx - tr_txt_small.get_width() // 2, rect_train.centery - tr_txt_small.get_height() // 2))
         
@@ -1603,29 +1735,35 @@ def main():
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
-    # 1. Start Multi-Input Receiver
     input_rx = MultiInputReceiver()
     if USE_LIVE_UDP:
         input_rx.start()
+
+    # Add the webcam receiver object
+    if HAS_WEBCAM_DEPS:
+        webcam_rx = WebcamEmotionReceiver()
+    else:
+        webcam_rx = None
 
     font_title = pygame.font.SysFont("arial", 58, bold=True)
     font_big = pygame.font.SysFont("arial", 40, bold=True)
     font_small = pygame.font.SysFont("arial", 20)
 
-    # --- OUTER APP LOOP (Allows returning to menu) ---
     while True:
-        # 2. Mode Selection
         selected_mode, training_mode = mode_selection_screen(screen, font_title, font_big)
 
-        # 3. Setup Logic based on Mode
         baseline = 80
         if selected_mode == InputMode.HEART_RATE:
             baseline = baseline_input_screen(screen, font_title, font_big, font_small)
         
+        if selected_mode == InputMode.EMOTION and HAS_WEBCAM_DEPS and webcam_rx:
+            webcam_rx.start()
+        elif webcam_rx:
+            webcam_rx.stop()
+
         settings = GameSettings(input_type=selected_mode, baseline_bpm=baseline)
         bio_ctrl = BiometricController(settings)
 
-        # 4. Load Assets & Level
         player_img = load_image(PLAYER_PATH)
         level_idx = 1
         level = Level(level_idx)
@@ -1633,7 +1771,6 @@ def main():
         player = Player(level.spawn[0], level.spawn[1], player_img)
         player.set_spawn(level.spawn[0], level.spawn[1])
         
-        # Checkpoint (Initially Spawn)
         current_checkpoint = pygame.Vector2(level.spawn[0], level.spawn[1])
 
         deaths = 0
@@ -1642,8 +1779,7 @@ def main():
         cam = Camera()
         world = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
-        # Menu Button Rect (Screen Coordinates)
-        menu_btn_rect = pygame.Rect(20, 20, 100, 40) # Top left
+        menu_btn_rect = pygame.Rect(20, 20, 100, 40) 
 
         running = True
         while running:
@@ -1654,13 +1790,13 @@ def main():
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     input_rx.stop()
+                    if webcam_rx: webcam_rx.stop()
                     pygame.quit(); sys.exit()
                 
-                # Check Menu Button Click
                 if event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1: # Left click
+                    if event.button == 1: 
                         if menu_btn_rect.collidepoint(mx, my):
-                            running = False # Break loop, returns to Mode Select
+                            running = False 
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
@@ -1672,7 +1808,6 @@ def main():
                         player.respawn()
                         level.projectiles.clear()
 
-                    # Manual Mode Overrides (for testing)
                     if event.key == KEY_FORCE_STRESS:
                         bio_ctrl.mode_override = "stress"
                     if event.key == KEY_FORCE_PANIC:
@@ -1680,15 +1815,49 @@ def main():
                     if event.key == KEY_FORCE_AUTO:
                         bio_ctrl.mode_override = None
 
-            # 5. Get Live Data & Update Controller
-            latest_bpm, latest_emotion = input_rx.get_data()
+                    if training_mode:
+                        if event.key == pygame.K_1:
+                            level_idx = 1
+                            level = Level(level_idx)
+                            player.set_spawn(level.spawn[0], level.spawn[1])
+                            current_checkpoint = pygame.Vector2(level.spawn[0], level.spawn[1])
+                            player.respawn()
+                            level.projectiles.clear()
+                            finished = False
+                        elif event.key == pygame.K_2:
+                            level_idx = 2
+                            level = Level(level_idx)
+                            player.set_spawn(level.spawn[0], level.spawn[1])
+                            current_checkpoint = pygame.Vector2(level.spawn[0], level.spawn[1])
+                            player.respawn()
+                            level.projectiles.clear()
+                            finished = False
+                        elif event.key == pygame.K_3:
+                            level_idx = 3
+                            level = Level(level_idx)
+                            player.set_spawn(level.spawn[0], level.spawn[1])
+                            current_checkpoint = pygame.Vector2(level.spawn[0], level.spawn[1])
+                            player.respawn()
+                            level.projectiles.clear()
+                            finished = False
+
+            latest_bpm, latest_emotion_udp = input_rx.get_data()
+            webcam_surf = None
+
+            if selected_mode == InputMode.EMOTION and HAS_WEBCAM_DEPS and webcam_rx:
+                latest_emotion_webcam, webcam_surf = webcam_rx.get_data()
+                if latest_emotion_webcam == "NEUTRAL" and latest_emotion_udp != "NEUTRAL":
+                    latest_emotion = latest_emotion_udp
+                else:
+                    latest_emotion = latest_emotion_webcam
+            else:
+                latest_emotion = latest_emotion_udp
+
             bio_ctrl.update(dt, keys, latest_bpm, latest_emotion)
             
             mode = bio_ctrl.get_mode()
 
             if not finished:
-                # Update Level (which includes wall physics/crush logic)
-                # Level.update now returns True if player died (e.g. crushed)
                 died_in_level = level.update(dt, player)
                 if died_in_level:
                     if training_mode:
@@ -1703,13 +1872,9 @@ def main():
 
                 player.update(dt, keys, mode)
 
-                # Standard Physics (Player vs Static World)
                 died_physics = resolve_physics(player, level, dt)
                 
-                # CHECKPOINT LOGIC
-                # Only update checkpoint if: Training Mode ON, Player Alive, On Ground
                 if training_mode and not died_physics and not died_in_level and player.on_ground:
-                    # Filter dangerous traps to avoid saving checkpoint on them
                     trap_rects = [t.rect for t in level.traps if t.kind in ("collapsing_floor", "falling_block", "shifting_wall", "rising_pit")]
                     
                     foot_rect = pygame.Rect(player.rect.x, player.rect.bottom, player.rect.w, 2)
@@ -1717,7 +1882,6 @@ def main():
                     
                     for plat in level.platforms:
                         if foot_rect.colliderect(plat):
-                            # Ensure this platform isn't a dangerous trap
                             is_trap = False
                             for tr in trap_rects:
                                 if tr == plat:
@@ -1742,7 +1906,6 @@ def main():
                         level.projectiles.clear()
 
                 for d in level.doors:
-                    # Level 1 specific: Reveal real door if player passes fake door
                     if level_idx == 1 and d.fake and not level.real_door.visible:
                         if player.rect.x > d.rect.x + 80:
                             level.real_door.visible = True
@@ -1774,13 +1937,11 @@ def main():
                     else:
                         level = Level(level_idx)
                         player.set_spawn(level.spawn[0], level.spawn[1])
-                        # Reset checkpoint for new level
                         current_checkpoint = pygame.Vector2(level.spawn[0], level.spawn[1])
                         player.respawn()
 
             cam.update(player.rect.centerx, level.world_w)
 
-            # 6. Visual Effects
             if mode == "stress":
                 shake = 1
                 zoom = 1.03
@@ -1798,7 +1959,6 @@ def main():
             sx = random.randint(-shake, shake) if shake else 0
             sy = random.randint(-shake, shake) if shake else 0
 
-            # Draw World
             world.fill((0, 0, 0, 0))
             cam_shake = Camera()
             cam_shake.x = cam.x - sx
@@ -1808,14 +1968,13 @@ def main():
             if mode == "panic":
                 apply_panic_vision(world, player.rect, cam_shake)
 
-            # Draw UI
-            draw_ui(world, font_big, font_small, bio_ctrl, mode, min(level_idx, 3), deaths, player, training_mode)
+            draw_ui(world, font_big, font_small, bio_ctrl, mode, min(level_idx, 3), deaths, player, training_mode, webcam_surf=webcam_surf)
 
             footer = font_small.render(
                 "A/D move   Space jump   Q flash   R respawn   -/= bpm   I stress   O panic   U auto",
                 True, (255, 255, 255)
             )
-            world.blit(footer, (150, HEIGHT - 28)) # Moved slightly right to avoid menu button
+            world.blit(footer, (150, HEIGHT - 28)) 
 
             if finished:
                 msg = pygame.font.SysFont("arial", 58, bold=True).render("YOU SURVIVED.", True, (255, 255, 255))
@@ -1834,7 +1993,6 @@ def main():
                     bio_ctrl.mode_override = None
                     level.projectiles.clear()
 
-            # Final Scale to Screen
             if abs(zoom - 1.0) < 1e-3:
                 screen.blit(world, (0, 0))
             else:
@@ -1845,8 +2003,6 @@ def main():
                 y = (scaled_h - HEIGHT) // 2
                 screen.blit(scaled, (-x, -y))
 
-            # --- Draw Menu Button on Screen (Top Layer) ---
-            # Using screen coords so it doesn't shake/zoom
             btn_color = (60, 60, 90) if not menu_btn_rect.collidepoint(mx, my) else (80, 80, 110)
             pygame.draw.rect(screen, btn_color, menu_btn_rect, border_radius=8)
             pygame.draw.rect(screen, (200, 200, 255), menu_btn_rect, width=2, border_radius=8)
