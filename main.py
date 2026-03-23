@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import pygame
+from pulsoid_heartrate import get_heart_rate, validate_token
 
 # ----------------------------
 # WEBCAM EMOTION CONFIG
@@ -50,6 +51,11 @@ USE_LIVE_UDP = True       # set False to disable UDP listening
 UDP_BIND_IP = "0.0.0.0"   # listen on all interfaces
 UDP_PORT = 5005           # your phone app must send to this port
 UDP_TIMEOUT = 0.2         # seconds
+
+# Pulsoid HTTPS config (optional). Set token in .env as PULSOID_ACCESS_TOKEN.
+USE_PULSOID = True
+PULSOID_TOKEN_ENV = "PULSOID_ACCESS_TOKEN"
+PULSOID_POLL_INTERVAL_SEC = 0.5
 
 # ----------------------------
 # Player / art
@@ -274,6 +280,53 @@ class MultiInputReceiver:
                 continue
             except Exception as e:
                 continue
+
+
+class PulsoidReceiver:
+    """Background Pulsoid poller for live BPM over HTTPS."""
+
+    def __init__(self):
+        self._token = None
+        self._latest_bpm = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._token = os.environ.get(PULSOID_TOKEN_ENV, "").strip()
+        if not self._token:
+            print("[Pulsoid] No token found. Set PULSOID_ACCESS_TOKEN in .env to enable.")
+            return
+
+        ok, result = validate_token(self._token)
+        if not ok:
+            print(f"[Pulsoid] Disabled: {result}")
+            return
+
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        print("[Pulsoid] Connected. Reading live BPM.")
+
+    def stop(self):
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def get_bpm(self):
+        with self._lock:
+            return self._latest_bpm
+
+    def _run(self):
+        while not self._stop.is_set():
+            bpm = get_heart_rate(self._token)
+            if bpm is not None:
+                bpm = int(clamp(bpm, 40, 200))
+                with self._lock:
+                    self._latest_bpm = bpm
+            time.sleep(PULSOID_POLL_INTERVAL_SEC)
 
 
 class WebcamEmotionReceiver:
@@ -1507,7 +1560,7 @@ def apply_panic_vision(surface, player_rect: pygame.Rect, cam: Camera):
 # ----------------------------
 # UI
 # ----------------------------
-def draw_ui(surface, font_big, font_small, controller: BiometricController, mode, level_idx, deaths, player: Player, training_mode: bool, webcam_surf: pygame.Surface = None):
+def draw_ui(surface, font_big, font_small, controller: BiometricController, mode, level_idx, deaths, player: Player, training_mode: bool, webcam_surf: pygame.Surface = None, hr_source: str = "SIMULATED"):
     panel = pygame.Rect(WIDTH - 455, 18, 430, 150)
 
     glass = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
@@ -1542,6 +1595,10 @@ def draw_ui(surface, font_big, font_small, controller: BiometricController, mode
 
     tmode = font_small.render(f"Mode: {mode.upper()}", True, mode_color)
     surface.blit(tmode, (panel.x + 18, panel.y + 86))
+
+    if controller.settings.input_type == InputMode.HEART_RATE:
+        source_txt = font_small.render(f"Source: {hr_source}", True, (170, 235, 255))
+        surface.blit(source_txt, (panel.x + 250, panel.y + 86))
 
     flash = f"{player.flash_charges}"
     if player.flash_active:
@@ -1726,6 +1783,22 @@ def baseline_input_screen(screen, font_title, font_big, font_small):
         pygame.display.flip()
 
 
+def resolve_heart_rate_baseline(screen, font_title, font_big, font_small, pulsoid_rx: PulsoidReceiver) -> int:
+    """
+    Prefer Pulsoid live BPM for baseline. Falls back to manual entry if unavailable.
+    """
+    if USE_PULSOID:
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            bpm = pulsoid_rx.get_bpm()
+            if bpm is not None:
+                print(f"[Pulsoid] Using baseline BPM from live data: {bpm}")
+                return int(bpm)
+            time.sleep(0.1)
+        print("[Pulsoid] No live BPM yet. Falling back to manual baseline input.")
+    return baseline_input_screen(screen, font_title, font_big, font_small)
+
+
 # ----------------------------
 # MAIN
 # ----------------------------
@@ -1738,6 +1811,9 @@ def main():
     input_rx = MultiInputReceiver()
     if USE_LIVE_UDP:
         input_rx.start()
+    pulsoid_rx = PulsoidReceiver()
+    if USE_PULSOID:
+        pulsoid_rx.start()
 
     # Add the webcam receiver object
     if HAS_WEBCAM_DEPS:
@@ -1754,7 +1830,7 @@ def main():
 
         baseline = 80
         if selected_mode == InputMode.HEART_RATE:
-            baseline = baseline_input_screen(screen, font_title, font_big, font_small)
+            baseline = resolve_heart_rate_baseline(screen, font_title, font_big, font_small, pulsoid_rx)
         
         if selected_mode == InputMode.EMOTION and HAS_WEBCAM_DEPS and webcam_rx:
             webcam_rx.start()
@@ -1790,6 +1866,7 @@ def main():
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     input_rx.stop()
+                    pulsoid_rx.stop()
                     if webcam_rx: webcam_rx.stop()
                     pygame.quit(); sys.exit()
                 
@@ -1841,7 +1918,15 @@ def main():
                             level.projectiles.clear()
                             finished = False
 
-            latest_bpm, latest_emotion_udp = input_rx.get_data()
+            latest_bpm_udp, latest_emotion_udp = input_rx.get_data()
+            latest_bpm_pulsoid = pulsoid_rx.get_bpm()
+            latest_bpm = latest_bpm_pulsoid if latest_bpm_pulsoid is not None else latest_bpm_udp
+            if latest_bpm_pulsoid is not None:
+                hr_source = "PULSOID"
+            elif latest_bpm_udp is not None:
+                hr_source = "UDP"
+            else:
+                hr_source = "SIMULATED"
             webcam_surf = None
 
             if selected_mode == InputMode.EMOTION and HAS_WEBCAM_DEPS and webcam_rx:
@@ -1968,7 +2053,19 @@ def main():
             if mode == "panic":
                 apply_panic_vision(world, player.rect, cam_shake)
 
-            draw_ui(world, font_big, font_small, bio_ctrl, mode, min(level_idx, 3), deaths, player, training_mode, webcam_surf=webcam_surf)
+            draw_ui(
+                world,
+                font_big,
+                font_small,
+                bio_ctrl,
+                mode,
+                min(level_idx, 3),
+                deaths,
+                player,
+                training_mode,
+                webcam_surf=webcam_surf,
+                hr_source=hr_source,
+            )
 
             footer = font_small.render(
                 "A/D move   Space jump   Q flash   R respawn   -/= bpm   I stress   O panic   U auto",
