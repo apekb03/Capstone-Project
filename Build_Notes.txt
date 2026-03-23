@@ -1,4 +1,15 @@
 #Build Change notes on rageBait.py
+(3/16/2025) 0.5
+Created a "Door" to move between the levels by creating a door class. Added the mode selection
+from the demo code file. Converted that code into a class system to match the new code layout
+
+(3/12/2026) 0.4
+made the platform move back and forth across the screen added trap platforms and failing platforms.
+
+
+
+
+
 (3/4/2026) Ver 0.3
 Created a main menu system that makes use of the .collidepoint(mousePos) and mouseClick[0] to "start" , "quit" 
 or "level selection". Level selection still needs to be converted to a class. Started thinking on how to make 
