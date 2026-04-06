@@ -4,7 +4,11 @@
 import pygame
 import json
 import sys
+import socket
+import threading
+
 from enum import Enum
+from dataclasses import dataclass
 
 from pygame.locals import *
 from OpenGL.GL import *
@@ -109,7 +113,93 @@ def draw_object(position, scale_x, scale_y, scale_z, color=(1, 1, 1)):
         draw_cube(color)
         glPopMatrix() #restores previous state
 
+#Below is the multi-input reciver class and variable related to running the heart beat
 #================================================================================
+def clamp(val, min_val, max_val):
+	return max(min_val, min(max_val, val))
+
+UDP_BIND_IP = "0.0.0.0"
+UDP_PORT = 5005
+UDP_TIMEOUT = 0.5
+
+class MultiInputReceiver:
+	def __init__(self, bind_ip = UDP_BIND_IP, port = UDP_PORT):
+		self.bind_ip = bind_ip
+		self.port = port
+		self._latest_bpm = None
+		self._latest_emotion = "NEUTRAL"
+		self._lock = threading.Lock()
+		self._stop = threading.Event()
+		self._thread = None
+
+	def start(self):
+		if self._thread and self._thead.is_alive():
+			return
+		self._stop.clear()
+		self._thread = threading.Thread(target = self._run, daemon = True)
+		self._thread.start()
+
+	def stop(self):
+		self._stop.set()
+
+	def get_data(self):
+		with self._lock:
+			return self._latest_bpm, self._latest_emotion
+
+	def _parse_bpm(self, msg: str):
+		if msg.startwith("{") and "bpm" in msg.lower():
+			try:
+				obj = json.loads(msg)
+				return int(float(obj.get("bpm", 0)))
+			except: pass
+		if ":" in msg:
+			parts = msg.split(":")
+			for p in reversed(parts):
+				clean = "".join(c for c in p if c.isdigit() or c == '.')
+				if clean:
+					return int(float(clean))
+		clean = "".join(c for c in msg if c.isdigit() or c == '.')
+		if clean:
+			return int(float(clean))
+		return None
+
+	def _run(self):
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		sock.settimeout(UDP_TIMEOUT)
+		try:
+			sock.bind((self.bind_ip, self.port))
+		except OSError:
+			print(f"UDP Port {self.port} busy. Live input disabled.")
+			return
+
+		while not self._stop.is_set():
+			try:
+				data, _addr = sock.recvfrom(512)
+				msg = data.decode("utf-8", errors="ignore").strip().upper()
+
+				valid_emotion = ["HAPPY", "NEUTRAL", "SAD", "ANGRY", "FEAR", "SURPRISED"]
+				found_emotion = False
+
+				for emo in valid_emotions:
+					if emo in msg:
+						with self._lock:
+							self._latest_emotion = emo
+						found_emotion = True
+						break
+				if not found_emotion:
+					bpm = self._parse_emotion(msg)
+					if bpm is not None:
+						bpm = int(clamp(bpm, 40, 180))
+						with self._lock:
+							self._latest_bpm = bpm
+
+			except socket.timeout:
+				continue
+			except Exception as e:
+				continue
+receiver = MultiInputReceiver()
+receiver.start()
+#===============================================================================
 class Player:
 	def __init__(self, spawn_pos = [0, 2, 35]):
 		self.spawn_pos = list(spawn_pos)
@@ -122,6 +212,9 @@ class Player:
 		self.yaw = 90
 		self.pitch = -30
 		self.sens = 0.1 # sens stands for Sensitivity
+
+		self.bpm = 80
+		self.emotion = "NEUTRAL"
 
 	def mouse(self):
 		dx, dy = pygame.mouse.get_rel()
@@ -304,6 +397,15 @@ class LvlOne:
 			if event.type == QUIT:
 				return "quit"
 	def update(self, dt):
+		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
+
+		if inputMode == InputMode.HEART_RATE:
+			if bpm is not None:
+				self.player.bpm = bpm
+
+		elif inputMode == InputMode.EMOTION:
+			self.player.emotion = emotion #====
+
 		self.player.mouse()
 
 		keys = pygame.key.get_pressed()
@@ -343,6 +445,9 @@ class LvlOne:
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
 
+		draw_text(f"BPM: {self.player.bpm}", 20, 120)
+		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
+
 		end_2d()
 #=========================================================================================================
 class LvlTwo:
@@ -357,6 +462,15 @@ class LvlTwo:
 			if event.type == QUIT:
 				return "quit"
 	def update(self, dt):
+		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
+
+		if inputMode == InputMode.HEART_RATE:
+			if bpm is not None:
+				self.player.bpm = bpm
+
+		elif inputMode == InputMode.EMOTION:
+			self.player.emotion = emotion #====
+
 		self.player.mouse()
 
 		keys = pygame.key.get_pressed()
