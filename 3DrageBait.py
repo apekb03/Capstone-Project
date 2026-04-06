@@ -9,7 +9,7 @@ import threading
 
 from enum import Enum
 from dataclasses import dataclass
-
+from pulsoid_heartrate import get_heart_rate, validate_token
 from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
