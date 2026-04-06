@@ -6,6 +6,7 @@ import json
 import sys
 import socket
 import threading
+import os
 
 from enum import Enum
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ SCREEN_HEIGHT = 1080
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 FONT = pygame.font.Font(None, 36)
-
+PULSOID_TOKEN = os.environ.get("PULSOID_TOKEN")
 
 SCREEN = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
 pygame.display.set_caption("Heart Beat Devil")
@@ -123,7 +124,7 @@ UDP_PORT = 5005
 UDP_TIMEOUT = 0.5
 
 class MultiInputReceiver:
-	def __init__(self, bind_ip = UDP_BIND_IP, port = UDP_PORT):
+	def __init__(self, bind_ip = UDP_BIND_IP, port = UDP_PORT, pulsoid_token=None):
 		self.bind_ip = bind_ip
 		self.port = port
 		self._latest_bpm = None
@@ -131,9 +132,10 @@ class MultiInputReceiver:
 		self._lock = threading.Lock()
 		self._stop = threading.Event()
 		self._thread = None
+		self.pulsoid_token = pulsoid_token
 
 	def start(self):
-		if self._thread and self._thead.is_alive():
+		if self._thread and self._thread.is_alive():
 			return
 		self._stop.clear()
 		self._thread = threading.Thread(target = self._run, daemon = True)
@@ -141,26 +143,28 @@ class MultiInputReceiver:
 
 	def stop(self):
 		self._stop.set()
+		if self._thread:
+			self._thread.join()
 
 	def get_data(self):
 		with self._lock:
 			return self._latest_bpm, self._latest_emotion
 
 	def _parse_bpm(self, msg: str):
-		if msg.startwith("{") and "bpm" in msg.lower():
-			try:
+		try: 
+			if msg.startswith("{") and "bpm" in msg.lower():
 				obj = json.loads(msg)
 				return int(float(obj.get("bpm", 0)))
-			except: pass
-		if ":" in msg:
-			parts = msg.split(":")
-			for p in reversed(parts):
-				clean = "".join(c for c in p if c.isdigit() or c == '.')
-				if clean:
-					return int(float(clean))
-		clean = "".join(c for c in msg if c.isdigit() or c == '.')
-		if clean:
-			return int(float(clean))
+			if ":" in msg:
+				for part in msg.split(":")[::-1]:
+					clean = "".join(c for c in part if c.isdigit() or c == ".")
+					if clean:
+						return int(float(clean))
+			clean = "".join(c for c in msg if c.isdigit() or c == ".")
+			if clean:
+				return int(float(clean))
+		except Exception:
+			pass
 		return None
 
 	def _run(self):
@@ -169,17 +173,21 @@ class MultiInputReceiver:
 		try:
 			sock.bind((self.bind_ip, self.port))
 		except OSError:
-			print(f"UDP Port {self.port} busy. Live input disabled.")
-			return
+			print(f"UDP Port {self.port} busy. UDP input disabled")
 
 		while not self._stop.is_set():
+			if self.pulsoid_token:
+				bpm = get_heart_rate(self.pulsoid_token)
+				if bpm:
+					with self._lock:
+						self._latest_bpm = bpm
+
 			try:
 				data, _addr = sock.recvfrom(512)
 				msg = data.decode("utf-8", errors="ignore").strip().upper()
 
-				valid_emotion = ["HAPPY", "NEUTRAL", "SAD", "ANGRY", "FEAR", "SURPRISED"]
+				valid_emotions = ["HAPPY", "NEUTRAL", "ANGRY"]
 				found_emotion = False
-
 				for emo in valid_emotions:
 					if emo in msg:
 						with self._lock:
@@ -187,17 +195,16 @@ class MultiInputReceiver:
 						found_emotion = True
 						break
 				if not found_emotion:
-					bpm = self._parse_emotion(msg)
+					bpm = self._parse_bpm(msg)
 					if bpm is not None:
-						bpm = int(clamp(bpm, 40, 180))
+						bpm = max(40, min(180, bpm))
 						with self._lock:
 							self._latest_bpm = bpm
-
 			except socket.timeout:
 				continue
 			except Exception as e:
 				continue
-receiver = MultiInputReceiver()
+receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN)
 receiver.start()
 #===============================================================================
 class Player:
