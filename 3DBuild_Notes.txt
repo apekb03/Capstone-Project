@@ -1,3 +1,11 @@
+(3/28/2026)
+Continued on working on integrating and moving the 2D code into a 3D render and making it work between the two
+python modes, pygame and PyOpenGL. In my tinkering and exploring I came across that you can change the order of
+how everything loads making it easier later to add pause menus and to help prevent breaking and bugs down the line.
+
+
+
+
 (3/27/2026)
 Started working on converting everything to a Class system like the 2D version of our game.
 Start with creating the the player class and level classes. Everything was moved into a class/ state system.
