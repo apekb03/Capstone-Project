@@ -7,6 +7,7 @@ import sys
 import socket
 import threading
 import os
+import random
 
 from enum import Enum
 from dataclasses import dataclass
@@ -72,6 +73,48 @@ def draw_text(text, x, y):
 	text_data = pygame.image.tostring(surface, "RGBA", True)
 	glRasterPos2f(x, y)
 	glDrawPixels(surface.get_width(), surface.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
+def draw_screen_effects(player):
+	intensity = player.get_intensity()
+
+	if intensity <= 0:
+		return
+
+	pulse = math.sin(pygame.time.get_ticks() * 0.02 * (player.bpm / 60))
+	pulse = (pulse + 1) / 2
+
+	glEnable(GL_BLEND)
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+	dim_alpha = intensity * pulse * 0.6 #change for tuning
+
+	glColor4f(0.0, 0.0, 0.0, dim_alpha)
+
+	glBegin(GL_QUADS)
+	glVertex2f(0, 0)
+	glVertex2f(SCREEN_WIDTH, 0)
+	glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
+	glVertex2d(0, SCREEN_HEIGHT)
+	glEnd()
+
+	layers = 8 #changes vignette smoothness
+
+	for i in range(layers):
+		t = i /layers
+		alpha = intensity * (t ** 2) * 0.8
+
+		margin_x = int(SCREEN_WIDTH * 0.5 * t)
+		margin_y = int(SCREEN_HEIGHT * 0.5 * t)
+
+		glColor4f(0.0, 0.0, 0.0, alpha)
+
+		glBegin(GL_QUADS)
+		glVertex2f(margin_x, margin_y)
+		glVertex2f(SCREEN_WIDTH - margin_x, margin_y)
+		glVertex2f(SCREEN_WIDTH - margin_x, SCREEN_HEIGHT - margin_y)
+		glVertex2f(margin_x, SCREEN_HEIGHT - margin_y)
+		glEnd()
+
 #Platform arguments  [x, y, z] X controls the - = left and + = right, Y is ground.
 #z controls forward and backward  with + = forward and - = backward
 #PLATFORM_POS = [5, 2, 0]
@@ -223,6 +266,10 @@ class Player:
 		self.bpm = 80
 		self.emotion = "NEUTRAL"
 
+		self.shake_intensity = 0
+		self.shake_timer = 0
+		self.dim_intensity = 0
+
 	def mouse(self):
 		dx, dy = pygame.mouse.get_rel()
 
@@ -275,7 +322,49 @@ class Player:
 	def camera(self):
 		x, y, z = self.pos[0], self.pos[1] +1.5, self.pos[2]
 		f = self.front()
-		gluLookAt(x, y, z, x+f[0], y+f[1], z+f[2], 0, 1, 0)
+
+		shake_x = 0
+		shake_y = 0
+
+		if self.shake_timer > 0:
+			pulse = math.sin(pygame.time.get_ticks() * 0.02 * (self.bpm / 60))
+			shake_x = pulse * self.shake_intensity
+			shake_y = pulse * self.shake_intensity
+
+		gluLookAt(x + shake_x, y + shake_y, z, x+f[0], y+f[1], z+f[2], 0, 1, 0)
+
+	def get_intensity(self):
+		threshold = 100
+		max_bpm = 160
+
+		if self.bpm <= threshold:
+			return 0
+
+		intensity = (self.bpm - threshold) / (max_bpm - threshold)
+		return max(0, min(1, intensity))
+
+	def update_effects(self, dt):
+		intensity = self.get_intensity()
+
+		#Shake
+		if intensity > 0:
+			self.shake_intensity = intensity * 0.5 #Change this for dif intensity
+			self.shake_timer = 0.1
+		else: 
+			self.shake_intensity = 0
+
+		#Dim
+		self.dim_intensity = intensity
+
+	def get_bpm_factor(self):
+		min_bpm = 60
+		max_bpm = 160
+
+		bpm = max(min_bpm, min(max_bpm, self.bpm))
+
+		t = (bpm - min_bpm) / (max_bpm - min_bpm)
+
+		return 0.7 + t * 1.3
 
 	def respawn(self):
 		self.pos = list(self.spawn_pos)
@@ -298,21 +387,66 @@ class Door:
 			abs(player.pos[1] - self.pos[1]) < (self.size[1] + player_half) and
 			abs(player.pos[2] - self.pos[2]) < (self.size[2] + player_half)
 		)
-#=======================================================================================
+#========================================================================
+class MovingPlatform:
+	def __init__(self, start_pos, size, axis="x", range=5, speed=2):
+		self.start_pos = list(start_pos)
+		self.pos = list(start_pos)
+		self.size = size
+
+		self.axis = axis
+		self.range = range
+		self.base_speed = speed
+		self.speed = speed
+
+		self.time = 0
+		self.prev_pos = list(start_pos)
+
+	def update(self, dt):
+		self.time += dt * self.speed
+
+		self.prev_pos = list(self.pos)
+		offset = math.sin(self.time) * self.range
+
+		if self.axis == "x":
+			self.pos[0] = self.start_pos[0] + offset
+		elif self.axis == "y":
+			self.pos[1] = self.start_pos[1] + offset
+		elif self.axis == "z":
+			self.pos[2] = self.start_pos[2] + offset
+
+	def update_bpm(self, bpm_factor):
+		self.speed = self.base_speed * bpm_factor
+
+	def delta(self):
+		return [
+			self.pos[0] - self.prev_pos[0],
+			self.pos[1] - self.prev_pos[1],
+			self.pos[2] - self.prev_pos[2],
+		]
+
+	def draw(self):
+		draw_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 0.5, 1))
+#========================================================================
 class LevelSelection:
 	def __init__(self):
 		self.button_width = 250
 		self.button_height = 50
 		self.button_spacing = 60
 
-		start_y = 200
-		level_y = start_y + self.button_spacing
+		lvl1_y = 200
+		lvl2_y = lvl1_y + self.button_spacing
+		lvl3_y = lvl2_y + self.button_spacing
+		
 		#level 1 button
 		self.LVL1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL1_RECT.center = (SCREEN_WIDTH// 2, start_y)
+		self.LVL1_RECT.center = (SCREEN_WIDTH// 2, lvl1_y)
 		#level 2 button
 		self.LVL2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL2_RECT.center = (SCREEN_WIDTH//2, level_y)
+		self.LVL2_RECT.center = (SCREEN_WIDTH//2, lvl2_y)
+		#level 3 button
+		self.LVL3_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
+		self.LVL3_RECT.center = (SCREEN_WIDTH//2, lvl3_y)
 
 	def handleEvents(self, events):
 		for event in events:
@@ -323,6 +457,8 @@ class LevelSelection:
 					return "level1"
 				if self.LVL2_RECT.collidepoint(event.pos):
 					return "level2"
+				if self.LVL3_RECT.collidepoint(event.pos):
+					return "level3"
 
 	def update(self, dt):
 		pass
@@ -337,22 +473,23 @@ class LevelSelection:
 
 		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL1_RECT)
 		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL2_RECT)
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL3_RECT)
 
 		draw_text("Level 1", self.LVL1_RECT.centerx - 40, self.LVL1_RECT.centery - 15)
 		draw_text("Level 2", self.LVL2_RECT.centerx - 40, self.LVL2_RECT.centery - 15)
+		draw_text("level 3", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
 
 
 		end_2d()
 #=======================================================================================
 class Lvl:
-	def __init__(self):
+	def __init__(self, grounds=None, platforms=None):
 			#x  y,  z, scale_x, scale_y, scale_z
-		self.GROUNDS = [
-			[0, -1,  25, 4, 1, 15], #player spawns on this platform
-			[0, -1, -40, 4, 1, 15]  #this platfrom has the door on it
-		]
+		self.GROUNDS = grounds if grounds is not None else[]
+		self.PLATFORMS_POS = platforms if platforms is not None else[]
+		self.moving_platforms = []
+
 		#Platforms have x,y,z  (z is -forward, +back. Y +up & -down. X -left to +Right)
-		self.PLATFORMS_POS = [-3,1,2], [-1, 3, -7], [3, 4, -17] 
 
 		self.player_half = 1
 		self.DEATH_Y = -20
@@ -381,6 +518,25 @@ class Lvl:
 					p.vel_y = 0
 					p.jump = False
 
+		for plat in self.moving_platforms:
+			px, py, pz = p.pos
+			x, y, z =plat.pos
+			sx, sy, sz = plat.size
+
+			top = y + sy
+
+			if abs(px - x) < sx + self.player_half and \
+			   abs(pz - z) < sz + self.player_half:
+
+				if p.vel_y <= 0 and py >= top and py <= top + self.player_half:
+					p.pos[1] = top + self.player_half
+					p.vel_y = 0
+					p.jump = False
+
+					dx, dy, dz = plat.delta()
+					p.pos[0] += dx
+					p.pos[2] += dz
+
 	def draw(self):
 		for g in self.GROUNDS:
 			draw_object([g[0], g[1], g[2]], g[3], g[4], g[5], (1,0,0))
@@ -395,7 +551,17 @@ class LvlOne:
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player= Player()
-		self.level= Lvl()
+		self.level= Lvl(
+			grounds=[
+			[0, -1, 25, 6, 1, 15],
+			[0, -1, -40, 4, 1, 15]
+		],
+			platforms=[
+			[-3, 1, 2],
+			[-1, 3, -7],
+			[3, 4, -17]
+		]
+	)
 
 		self.door = Door([0, 2, -50], [1, 2, 1], "level2") #This is the line you change to move the door
 
@@ -418,13 +584,15 @@ class LvlOne:
 		keys = pygame.key.get_pressed()
 		self.player.move(keys, dt)
 		self.player.gravity_apply(dt)
+		self.player.update_effects(dt)
 
 		self.level.collide(self.player)
+
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
 
-		if self.door.check_collision(self.player):
+		if self.door.check_collision(self.player): #This line checks for the collision between player and door object
 			return self.door.targetLevel
 
 	def draw(self):
@@ -435,7 +603,7 @@ class LvlOne:
 		self.player.camera()
 
 		self.level.draw()
-		self.door.draw()
+		self.door.draw() #every draw needs this line to make the door appear in the level
 
 		begin_2d()
 
@@ -454,6 +622,7 @@ class LvlOne:
 
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
 		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
+		draw_screen_effects(self.player)
 
 		end_2d()
 #=========================================================================================================
@@ -462,7 +631,24 @@ class LvlTwo:
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
-		self.level = Lvl()
+		self.level = Lvl(
+			grounds=[
+			[0, -2, 30, 3, 1, 15],
+			[5, -2, -50, 3, 1, 15]
+		],
+			platforms=[
+			[-4, 2, -10],
+			[2, 4, -25],
+			[6, 6, -35]
+		]
+	)
+
+		self.level.moving_platforms = [
+			MovingPlatform([0, 2, -10], [2, 0.5, 2], axis="x", range=5, speed=2),
+			MovingPlatform([3, 4, -25], [2, 0.5, 2], axis="z", range=6, speed=1.5)
+		]
+
+		self.door = Door([0, 2, -50], [1, 2, 1], "level3")
 
 	def handleEvents(self, events):
 		for event in events:
@@ -483,6 +669,89 @@ class LvlTwo:
 		keys = pygame.key.get_pressed()
 		self.player.move(keys, dt)
 		self.player.gravity_apply(dt)
+		self.player.update_effects(dt)
+
+		bpm_factor = self.player.get_bpm_factor()
+
+		for plat in self.level.moving_platforms:
+			plat.update_bpm(bpm_factor)
+			plat.update(dt)
+
+		self.level.collide(self.player)
+
+		if self.player.pos[1] < self.level.DEATH_Y:
+			self.player.respawn()
+		if self.door.check_collision(self.player):
+			return self.door.targetLevel
+
+	def draw(self):
+		glClearColor(0.5, 0.7, 1.0, 1)
+		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+		glLoadIdentity()
+
+		self.player.camera()
+		self.level.draw()
+		self.door.draw()
+
+		for plat in self.level.moving_platforms:
+			plat.draw()
+
+		begin_2d()
+
+		mode_text = "None"
+		if inputMode == InputMode.HEART_RATE:
+			mode_text = "Heart Rate"
+		elif inputMode == InputMode.EMOTION:
+			mode_text = "Facial Emotion"
+
+		training_text = "ON" if trainingMode else "OFF"
+
+		draw_text("Level Two", 20, 40)
+		draw_text(f"Mode: {mode_text}", 20, 80)
+		draw_text(f"Training: {training_text}", 20, 100)
+
+		draw_text(f"BPM: {self.player.bpm}", 20, 120)
+#		draw_text(f"Emotion: {self.player.emotion}", 20, 140) 
+		draw_screen_effects(self.player)
+
+		end_2d()
+#========================================================================================
+class LvlThree():
+	def __init__(self):
+		pygame.mouse.set_visible(False)
+		pygame.event.set_grab(True)
+		self.player = Player()
+		self.level = Lvl(
+			grounds=[
+			[0, -3, 20, 2, 1, 15]
+		],
+			platforms=[
+			[-6, 2, -10],
+			[0, 5, -20],
+			[6, 3, -30]
+		]
+	)
+
+	def handleEvents(self, events):
+		for event in events:
+			if event.type == QUIT:
+				return "quit"
+
+	def update(self, dt):
+		bpm, emotion = receiver.get_data()
+
+		if inputMode == InputMode.HEART_RATE:
+			if bpm is not None:
+				self.player.bpm = bpm
+		elif inputMode == InputMode.EMOTION:
+			self.player.emotion = emotion
+
+		self.player.mouse()
+
+		keys = pygame.key.get_pressed()
+		self.player.move(keys, dt)
+		self.player.gravity_apply(dt)
+		self.player.update_effects(dt)
 
 		self.level.collide(self.player)
 
@@ -507,11 +776,15 @@ class LvlTwo:
 
 		training_text = "ON" if trainingMode else "OFF"
 
-		draw_text("Level Two", 20, 40)
+		draw_text("Level Three", 20, 40)
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
+		draw_text(f"BPM: {self.player.bpm}", 20, 120)
+#		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
+		draw_screen_effects(self.player)
 
 		end_2d()
+
 #========================================================================================
 class MainMenu:
 	def __init__(self):
@@ -743,6 +1016,8 @@ def main_menu():
 			currentState = LvlOne() #loads lvl1
 		elif result == "level2":
 			currentState = LvlTwo() #placeholder until lvl 2 is built
+		elif result == "level3":
+			currentState = LvlThree()
 
 
 		result = currentState.update(dt)
