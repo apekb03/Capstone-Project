@@ -553,7 +553,7 @@ class LvlOne:
 		self.player= Player()
 		self.level= Lvl(
 			grounds=[
-			[0, -1, 25, 6, 1, 15],
+			[0, -1, 25, 4, 1, 15],
 			[0, -1, -40, 4, 1, 15]
 		],
 			platforms=[
@@ -567,9 +567,18 @@ class LvlOne:
 
 	def handleEvents(self, events):
 		for event in events:
-			if event.type == QUIT:
-				return "quit"
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				pygame.mouse.set_visible(True)
+				pygame.event.set_grab(False)
+				return PauseMenu(self)
+	def on_enter(self):
+		pygame.mouse.set_visible(False)
+		pygame.event.set_grab(True)
+		pygame.mouse.get_rel()
+
 	def update(self, dt):
+		
+
 		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
 
 		if inputMode == InputMode.HEART_RATE:
@@ -633,27 +642,35 @@ class LvlTwo:
 		self.player = Player()
 		self.level = Lvl(
 			grounds=[
-			[0, -2, 30, 3, 1, 15],
-			[5, -2, -50, 3, 1, 15]
+			[0, -1, 30, 3, 1, 15],
+			[0, -1, -80, 3, 1, 15]
 		],
 			platforms=[
-			[-4, 2, -10],
-			[2, 4, -25],
-			[6, 6, -35]
+			[-3, 1, 7], #1 [x,y,z]
+			[0, 2, -3], #2 [x,y,z]
+			[4, 6, -45], #3 [x,y,z]
+			[0, 4, -55] #4 [x,y,z]
 		]
 	)
 
 		self.level.moving_platforms = [
-			MovingPlatform([0, 2, -10], [2, 0.5, 2], axis="x", range=5, speed=2),
-			MovingPlatform([3, 4, -25], [2, 0.5, 2], axis="z", range=6, speed=1.5)
+			MovingPlatform([0, 2, -15], [2, 0.5, 2], axis="x", range=5, speed=2),
+			MovingPlatform([3, 4, -30], [2, 0.5, 2], axis="z", range=6, speed=1.5)
 		]
 
-		self.door = Door([0, 2, -50], [1, 2, 1], "level3")
+		self.door = Door([0, 2, -90], [1, 2, 1], "level3")
 
 	def handleEvents(self, events):
 		for event in events:
-			if event.type == QUIT:
-				return "quit"
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				pygame.mouse.set_visible(True)
+				pygame.event.set_grab(False)
+				return PauseMenu(self)
+	def on_enter(self):
+		pygame.mouse.set_visible(False)
+		pygame.event.set_grab(True)
+		pygame.mouse.get_rel()
+
 	def update(self, dt):
 		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
 
@@ -734,8 +751,14 @@ class LvlThree():
 
 	def handleEvents(self, events):
 		for event in events:
-			if event.type == QUIT:
-				return "quit"
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				pygame.mouse.set_visible(True)
+				pygame.event.set_grab(False)
+				return PauseMenu(self)
+	def on_enter(self):
+		pygame.mouse.set_visible(False)
+		pygame.event.set_grab(True)
+		pygame.mouse.get_rel()
 
 	def update(self, dt):
 		bpm, emotion = receiver.get_data()
@@ -860,7 +883,70 @@ class MainMenu:
 		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 120, 120)
 
 		end_2d()
-#==============================================================================================================
+#===================================================================================
+class PauseMenu:
+	def __init__(self, previous_state):
+		self.previous_state = previous_state
+
+		self.button_width = 300
+		self.button_height = 60
+		self.spacing = 20
+
+		cx = SCREEN_WIDTH //2
+		start_y = SCREEN_HEIGHT //2
+
+		self.RESUME_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
+		self.RESUME_RECT.center = (cx, start_y)
+
+		self.MENU_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
+		self.MENU_RECT.center = (cx, start_y + self.button_height + self.spacing)
+
+		self.QUIT_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
+		self.QUIT_RECT.center = (cx, start_y + 2*(self.button_height + self.spacing))
+
+	def handleEvents(self, events):
+		for event in events:
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				return self.previous_state
+
+			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+				if self.RESUME_RECT.collidepoint(event.pos):
+					return self.previous_state
+
+				if self.MENU_RECT.collidepoint(event.pos):
+					return MainMenu()
+
+				if self.QUIT_RECT.collidepoint(event.pos):
+					return "quit"
+	def update(self, dt):
+		pass
+
+	def draw(self):
+		self.previous_state.draw()
+
+		begin_2d()
+
+		glColor4f(0, 0, 0, 0.7)
+		glBegin(GL_QUADS)
+		glVertex2f(0, 0)
+		glVertex2f(SCREEN_WIDTH, 0)
+		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
+		glVertex2f(0, SCREEN_HEIGHT)
+		glEnd()
+
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.RESUME_RECT)
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.MENU_RECT)
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
+
+		draw_text("Resume Game", self.RESUME_RECT.centerx - 50, self.RESUME_RECT.centery - 15)
+		draw_text("Main Menu", self.MENU_RECT.centerx - 70, self.MENU_RECT.centery - 15)
+		draw_text("Quit Game", self.QUIT_RECT.centerx - 30, self.QUIT_RECT.centery - 15)
+
+		draw_text("Paused", SCREEN_WIDTH//2 - 60, SCREEN_HEIGHT//2 - 140)
+
+		end_2d()
+
+#===================================================================================
 class ModeSelection:
 	def __init__(self):
 		pygame.mouse.set_visible(True)
@@ -994,36 +1080,41 @@ def main_menu():
 		events = pygame.event.get()
 		result = None
 
+		global paused
+
+		for event in events:
+			if event.type == pygame.QUIT:
+				return
 		if hasattr(currentState, "handleEvents"):
 			result = currentState.handleEvents(events)
 
 		if result == "quit":
 			menu = False
 
-		elif result == "start":
-			mode = ModeSelection()
-			mode.next_state = "level1"
-			currentState = mode
+		elif isinstance(result, str):
+			if result == "start":
+				currentState = LvlOne()
 
-		elif result == "lvlSelection":
-			mode = ModeSelection()
-			mode.next_state = "levelSelection"
-			currentState = mode
+			elif result == "level1":
+				currentState = LvlOne()
+			elif result == "level2":
+				currentState = LvlTwo()
+			elif result == "level3":
+				currentState = LvlThree()
+			elif result == "lvlSelection":
+				currentState = LevelSelection()
+			elif result == "main_menu":
+				currentState = MainMenu()
 
-		elif result == "levelSelection":
-			currentState = LevelSelection()
-		elif result == "level1":
-			currentState = LvlOne() #loads lvl1
-		elif result == "level2":
-			currentState = LvlTwo() #placeholder until lvl 2 is built
-		elif result == "level3":
-			currentState = LvlThree()
+		elif result is not None:
+			currentState = result
 
+			if hasattr(currentState, "on_enter"):
+				currentState.on_enter()
 
-		result = currentState.update(dt)
-		if result == "level2":
-			currentState = LvlTwo()
+		currentState.update(dt)
 		currentState.draw()
+
 
 		pygame.display.flip()
 
