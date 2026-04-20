@@ -256,6 +256,7 @@ class Player:
 		self.pos = list(spawn_pos)
 		self.vel_y = 0
 		self.speed = 6
+		self.sprintSpeed = 12
 		self.gravity = -15
 		self.jump = False
 
@@ -293,23 +294,26 @@ class Player:
 			flat = [flat[0]/l, 0, flat[2]/l]
 
 		right= [flat[2], 0, -flat[0]]
+		sprintSpeed = self.sprintSpeed * dt
 		speed = self.speed * dt
 
+		current_speed = sprintSpeed if keys[K_LSHIFT] else speed
+
 		if keys[K_w]:
-			self.pos[0] += flat[0]*speed
-			self.pos[2] += flat[2]*speed
+			self.pos[0] += flat[0]*current_speed
+			self.pos[2] += flat[2]*current_speed
 
 		if keys[K_s]:
-			self.pos[0] -= flat[0]*speed
-			self.pos[2] -= flat[2]*speed
+			self.pos[0] -= flat[0]*current_speed
+			self.pos[2] -= flat[2]*current_speed
 
 		if keys[K_d]:
-			self.pos[0] -= right[0]*speed
-			self.pos[2] -= right[2]*speed
+			self.pos[0] -= right[0]*current_speed
+			self.pos[2] -= right[2]*current_speed
 
 		if keys[K_a]:
-			self.pos[0] += right[0]*speed
-			self.pos[2] += right[2]*speed
+			self.pos[0] += right[0]*current_speed
+			self.pos[2] += right[2]*current_speed
 
 		if keys[K_SPACE] and not self.jump:
 			self.vel_y = 10
@@ -378,15 +382,24 @@ class Door:
 		self.targetLevel = targetLevel
 
 	def draw(self):
-		draw_object(self.pos, self.size[0], self.size[1], self.size[2], (1, 0, 1))
+		draw_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 0, 1))
 
 	def check_collision(self, player):
+		px, py, pz = player.pos
+		dx, dy, dz = self.pos
+		sx, sy, sz = self.size
+
 		player_half = 1
-		return (
-			abs(player.pos[0] - self.pos[0]) < (self.size[0] + player_half) and
-			abs(player.pos[1] - self.pos[1]) < (self.size[1] + player_half) and
-			abs(player.pos[2] - self.pos[2]) < (self.size[2] + player_half)
+
+		in_xz = (
+			abs(px - dx) < (sx * 0.5 + player_half) and
+			abs(pz - dz) < (sz * 0.5 + player_half)
 		)
+
+		in_y = abs(py - dy) < (sy * 0.5)
+
+		return in_xz and in_y
+
 #========================================================================
 class MovingPlatform:
 	def __init__(self, start_pos, size, axis="x", range=5, speed=2):
@@ -454,11 +467,11 @@ class LevelSelection:
 				return "quit"
 			if event.type == MOUSEBUTTONDOWN and event.button == 1:
 				if self.LVL1_RECT.collidepoint(event.pos):
-					return "level1"
+					self.next_state = ("start", "level1")
 				if self.LVL2_RECT.collidepoint(event.pos):
-					return "level2"
+					self.next_state = ("start", "level2")
 				if self.LVL3_RECT.collidepoint(event.pos):
-					return "level3"
+					self.next_state = ("start", "level3")
 
 	def update(self, dt):
 		pass
@@ -477,7 +490,7 @@ class LevelSelection:
 
 		draw_text("Level 1", self.LVL1_RECT.centerx - 40, self.LVL1_RECT.centery - 15)
 		draw_text("Level 2", self.LVL2_RECT.centerx - 40, self.LVL2_RECT.centery - 15)
-		draw_text("level 3", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
+		draw_text("Level 3", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
 
 
 		end_2d()
@@ -506,36 +519,74 @@ class Lvl:
 					p.pos[1] = gy + self.player_half
 					p.vel_y = 0
 					p.jump = False
+#-----------Platfrom collision ------------
 
 		for plat in self.PLATFORMS_POS:
-			top = plat[1] + self.plat_half[1]
+			dx = p.pos[0] - plat[0]
+			dz = p.pos[2] - plat[2]
 
-			if abs(p.pos[0] - plat[0]) < self.plat_half[0] + self.player_half and \
-			   abs(p.pos[2] - plat[2]) < self.plat_half[2] + self.player_half:
+			overlap_x = (self.plat_half[0] + self.player_half) - abs(dx)
+			overlap_z = (self.plat_half[2] + self.player_half) - abs(dz)
 
+			if overlap_x > 0 and overlap_z > 0:
+				top = plat[1] + self.plat_half[1]
+				landing_tolerance = 0.3
+
+				#top side collision
 				if p.vel_y <= 0 and p.pos[1] >= top and p.pos[1] <= top + self.player_half:
 					p.pos[1] = top + self.player_half
 					p.vel_y = 0
 					p.jump = False
 
+				elif not p.jump:
+					if overlap_x < overlap_z:
+						if dx > 0:
+							p.pos[0] += overlap_x
+						else:
+							p.pos[0] -= overlap_x
+					else:
+						if dz > 0:
+							p.pos[2] += overlap_z
+						else:
+							p.pos[2] -= overlap_z
+
+#----------Moving Platform collision-------------
+
 		for plat in self.moving_platforms:
 			px, py, pz = p.pos
-			x, y, z =plat.pos
+			x, y, z = plat.pos
 			sx, sy, sz = plat.size
 
-			top = y + sy
+			dx = px - x
+			dz = pz - z
 
-			if abs(px - x) < sx + self.player_half and \
-			   abs(pz - z) < sz + self.player_half:
+			overlap_x = (sx + self.player_half) - abs(dx)
+			overlap_z = (sz + self.player_half) - abs(dz)
 
+			if overlap_x > 0 and overlap_z > 0:
+				top = y + sy
+				landing_tolerance = 0.3
+
+#----------------------- Top Collision --------
 				if p.vel_y <= 0 and py >= top and py <= top + self.player_half:
 					p.pos[1] = top + self.player_half
 					p.vel_y = 0
 					p.jump = False
 
-					dx, dy, dz = plat.delta()
-					p.pos[0] += dx
-					p.pos[2] += dz
+					move_dx, move_dy, move_dz = plat.delta()
+					p.pos[0] += move_dx
+					p.pos[2] += move_dz
+				elif not p.jump:
+					if overlap_x < overlap_z:
+						if dx > 0:
+							p.pos[0] += overlap_x
+						else:
+							p.pos[0] -= overlap_x
+					else:
+						if dz > 0:
+							p.pos[2] += overlap_z
+						else:
+							p.pos[2] -= overlap_z
 
 	def draw(self):
 		for g in self.GROUNDS:
@@ -547,13 +598,14 @@ class Lvl:
 #================================================================================
 class LvlOne:
 	def __init__(self):
+		self.next_state = None
 
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player= Player()
 		self.level= Lvl(
 			grounds=[
-			[0, -1, 25, 4, 1, 15],
+			[0, -1, 25, 4, 1, 15], #arguments[position x,y,z scale x,y,z]
 			[0, -1, -40, 4, 1, 15]
 		],
 			platforms=[
@@ -572,12 +624,14 @@ class LvlOne:
 				pygame.event.set_grab(False)
 				return PauseMenu(self)
 	def on_enter(self):
+		self.next_state = None
+
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		pygame.mouse.get_rel()
 
 	def update(self, dt):
-		
+	#	print("Player:", self.player.pos, "Door:", self.door.pos)
 
 		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
 
@@ -594,15 +648,13 @@ class LvlOne:
 		self.player.move(keys, dt)
 		self.player.gravity_apply(dt)
 		self.player.update_effects(dt)
-
 		self.level.collide(self.player)
-
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
 
 		if self.door.check_collision(self.player): #This line checks for the collision between player and door object
-			return self.door.targetLevel
+			self.next_state = self.door.targetLevel
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -735,6 +787,8 @@ class LvlTwo:
 #========================================================================================
 class LvlThree():
 	def __init__(self):
+		self.next_state = None
+
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
@@ -756,6 +810,7 @@ class LvlThree():
 				pygame.event.set_grab(False)
 				return PauseMenu(self)
 	def on_enter(self):
+		self.next_state = None
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		pygame.mouse.get_rel()
@@ -780,6 +835,8 @@ class LvlThree():
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
+#		if self.door.check_collision(self.player):
+#			self.next_state = self.door.targetLevel
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -788,6 +845,7 @@ class LvlThree():
 
 		self.player.camera()
 		self.level.draw()
+#		self.door.draw()
 
 		begin_2d()
 
@@ -811,6 +869,7 @@ class LvlThree():
 #========================================================================================
 class MainMenu:
 	def __init__(self):
+		self.next_state = None
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
 
@@ -854,11 +913,11 @@ class MainMenu:
 				mousePos = event.pos
 
 				if self.START_RECT.collidepoint(mousePos):
-					return "start"
+					self.next_state = "start"
 				elif self.LEVEL_RECT.collidepoint(mousePos):
-					return "lvlSelection"
+					self.next_state = "lvlSelection"
 				elif self.QUIT_RECT.collidepoint(mousePos):
-					return "quit"
+					self.next_state = "quit"
 
 
 	def update(self, dt):
@@ -877,10 +936,10 @@ class MainMenu:
 		#draws our button text
 		draw_text("Start", self.START_RECT.centerx - 40, self.START_RECT.centery -15)
 		draw_text("Level Selection", self.LEVEL_RECT.centerx - 90, self.LEVEL_RECT.centery - 15)
-		draw_text("Quit", self.QUIT_RECT.centerx - 25, self.QUIT_RECT.centery - 15)
+		draw_text("Quit", self.QUIT_RECT.centerx - 30, self.QUIT_RECT.centery - 15)
 
 		#draws title
-		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 120, 120)
+		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 100, 120)
 
 		end_2d()
 #===================================================================================
@@ -938,9 +997,9 @@ class PauseMenu:
 		pygame.draw.rect(SCREEN, (100, 100, 100), self.MENU_RECT)
 		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
 
-		draw_text("Resume Game", self.RESUME_RECT.centerx - 50, self.RESUME_RECT.centery - 15)
-		draw_text("Main Menu", self.MENU_RECT.centerx - 70, self.MENU_RECT.centery - 15)
-		draw_text("Quit Game", self.QUIT_RECT.centerx - 30, self.QUIT_RECT.centery - 15)
+		draw_text("Resume Game", self.RESUME_RECT.centerx - 100, self.RESUME_RECT.centery - 15)
+		draw_text("Main Menu", self.MENU_RECT.centerx - 80, self.MENU_RECT.centery - 15)
+		draw_text("Quit Game", self.QUIT_RECT.centerx - 72, self.QUIT_RECT.centery - 15)
 
 		draw_text("Paused", SCREEN_WIDTH//2 - 60, SCREEN_HEIGHT//2 - 140)
 
@@ -953,7 +1012,8 @@ class ModeSelection:
 		pygame.event.set_grab(False)
 
 		self.training_mode = False
-		self.next_state = "level1"
+		self.next_state = None
+		self.target_level = "level1"
 
 		#Button Variable for selections
 		self.button_width = 350
@@ -1014,12 +1074,12 @@ class ModeSelection:
 				if self.MODE1_RECT.collidepoint(mousePos):
 					inputMode = InputMode.HEART_RATE
 					trainingMode = self.training_mode
-					return self.next_state
+					self.next_state = self.target_level
 
 				elif self.MODE2_RECT.collidepoint(mousePos):
 					inputMode = InputMode.EMOTION
 					trainingMode = self.training_mode
-					return self.next_state
+					self.next_state = self.target_level
 				elif self.TRAIN_RECT.collidepoint(mousePos):
 					self.training_mode = not self.training_mode
 
@@ -1084,38 +1144,58 @@ def main_menu():
 
 		for event in events:
 			if event.type == pygame.QUIT:
+				pygame.quit()
 				return
+
 		if hasattr(currentState, "handleEvents"):
 			result = currentState.handleEvents(events)
+			if result == "quit":
+				pygame.quit()
+				return
 
-		if result == "quit":
-			menu = False
+			if result is not None:
+				currentState = result
+				if hasattr(currentState, "on_enter"):
+					currentState.on_enter()
 
-		elif isinstance(result, str):
-			if result == "start":
-				currentState = LvlOne()
+		if hasattr(currentState, "update"):
+			currentState.update(dt)
 
-			elif result == "level1":
-				currentState = LvlOne()
-			elif result == "level2":
-				currentState = LvlTwo()
-			elif result == "level3":
-				currentState = LvlThree()
-			elif result == "lvlSelection":
+		if hasattr(currentState, "next_state") and currentState.next_state is not None:
+			new_state = currentState.next_state
+			currentState.next_state = None
+
+			if new_state == "quit":
+				pygame.quit()
+				return
+
+			if new_state == "start":
+				currentState = ModeSelection()
+
+			elif new_state == "lvlSelection":
 				currentState = LevelSelection()
-			elif result == "main_menu":
+
+			elif new_state == "main_menu":
 				currentState = MainMenu()
 
-		elif result is not None:
-			currentState = result
+			elif isinstance(new_state, tuple):
+				menu_target, level = new_state
 
-			if hasattr(currentState, "on_enter"):
-				currentState.on_enter()
+				if menu_target == "start":
+					ms = ModeSelection()
+					ms.target_level = level
+					currentState = ms
+			elif isinstance(new_state, str):
+				if new_state == "level1":
+					currentState = LvlOne()
 
-		currentState.update(dt)
+				elif new_state == "level2":
+					currentState = LvlTwo()
+
+				elif new_state == "level3":
+					currentState = LvlThree()
+
 		currentState.draw()
-
-
 		pygame.display.flip()
 
 	pygame.quit()
