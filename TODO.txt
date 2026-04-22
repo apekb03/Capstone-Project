@@ -1,5 +1,2 @@
 TODO list:
-Next time Fix lvlTwo() platforms placment
-
-Possibly do "BPM affecting platform height, speed and spacing per level
-Lvl3 will have "enemey's" chasing after the player and disapering platforms.
+Build Level 3 using what Melvin did in his 2D code with some modificaitions for 3D use
