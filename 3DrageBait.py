@@ -1,6 +1,6 @@
 #Created 2/2/2026 11:02PM
 #Original Coder James Musick
-#3D version of rageBait Version 0.2
+#3D version of rageBait Version 0.3
 import pygame
 import json
 import sys
