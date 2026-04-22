@@ -1,14 +1,18 @@
 #Created 2/2/2026 11:02PM
 #Original Coder James Musick
-#3D version of rageBait Version 0.04
+#3D version of rageBait Version 0.2
 import pygame
 import json
 import sys
+import asyncio
 import socket
 import threading
 import os
 import random
+import time
 
+from bleak import BleakClient
+HR_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
 from enum import Enum
 from dataclasses import dataclass
 from pulsoid_heartrate import get_heart_rate, validate_token
@@ -119,6 +123,23 @@ def draw_screen_effects(player):
 #z controls forward and backward  with + = forward and - = backward
 #PLATFORM_POS = [5, 2, 0]
 
+#pyramid Vertices
+pyramid_vertices = [
+	(0, 1, 0),
+	(-1, -1, -1),
+	(1, -1, -1),
+	(1, -1, 1),
+	(-1, -1, 1)
+]
+
+pyramid_faces = [
+	(0, 1, 2),
+	(0, 2, 3),
+	(0, 3, 4),
+	(0, 4, 1),
+	(1, 2, 3, 4)
+]
+
 #Cube Vertices points in space and lines connecting them together
 vertices = [
 	(1, -1, -1), (1, 1, -1), (-1, 1, -1), (-1, -1, -1),
@@ -157,6 +178,29 @@ def draw_object(position, scale_x, scale_y, scale_z, color=(1, 1, 1)):
         draw_cube(color)
         glPopMatrix() #restores previous state
 
+def draw_pyramid(color=(1, 0, 0)):
+	glBegin(GL_TRIANGLES)
+	#sides render
+	for i in range(4):
+		glColor3f(color[0], color[1] * 0.8, color[2] * 0.8)
+		for vertex in pyramid_faces[i]:
+			glVertex3fv(pyramid_vertices[vertex])
+
+	glEnd()
+	#base render
+	glBegin(GL_QUADS)
+	glColor3f(color[0] * 0.6, color[1] * 0.6, color[2] * 0.6)
+	for vertex in pyramid_faces[4]:
+		glVertex3fv(pyramid_vertices[vertex])
+	glEnd()
+
+def draw_pyramid_object(position, sx, sy, sz, color=(1, 0, 0)):
+	glPushMatrix()
+	glTranslatef(position[0], position[1], position[2])
+	glScalef(sx, sy, sz)
+	draw_pyramid(color)
+	glPopMatrix()
+
 #Below is the multi-input reciver class and variable related to running the heart beat
 #================================================================================
 def clamp(val, min_val, max_val):
@@ -167,7 +211,7 @@ UDP_PORT = 5005
 UDP_TIMEOUT = 0.5
 
 class MultiInputReceiver:
-	def __init__(self, bind_ip = UDP_BIND_IP, port = UDP_PORT, pulsoid_token=None):
+	def __init__(self, bind_ip = UDP_BIND_IP, port = UDP_PORT, pulsoid_token=None, ble_address=None):
 		self.bind_ip = bind_ip
 		self.port = port
 		self._latest_bpm = None
@@ -177,12 +221,21 @@ class MultiInputReceiver:
 		self._thread = None
 		self.pulsoid_token = pulsoid_token
 
+		self.ble_address = ble_address
+		self._ble_thread = None
+		self._ble_loop = None
+		self._last_ble_update = 0
+
 	def start(self):
 		if self._thread and self._thread.is_alive():
 			return
 		self._stop.clear()
 		self._thread = threading.Thread(target = self._run, daemon = True)
 		self._thread.start()
+
+		if self.ble_address:
+			self._ble_thread = threading.Thread(target = self._run_ble, daemon=True)
+			self._ble_thread.start()
 
 	def stop(self):
 		self._stop.set()
@@ -225,6 +278,7 @@ class MultiInputReceiver:
 					with self._lock:
 						self._latest_bpm = bpm
 
+
 			try:
 				data, _addr = sock.recvfrom(512)
 				msg = data.decode("utf-8", errors="ignore").strip().upper()
@@ -247,7 +301,52 @@ class MultiInputReceiver:
 				continue
 			except Exception as e:
 				continue
-receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN)
+
+	def _run_ble(self):
+		while not self._stop.is_set():
+			try:
+				asyncio.run(self._ble_main())
+			except Exception as e:
+				print("[BLE] crashed:", e)
+
+			if not self._stop.is_set():
+				print("[BLE] retrying in 2 seconds...")
+				time.sleep(2)
+
+	async def _ble_main(self):
+		print("[BLE] trying to connect...")
+
+		try:
+			async with BleakClient(self.ble_address) as client:
+				if not client.is_connected:
+					raise Exception("Connection failed")
+				print("[BLE] connected to Heartix")
+
+				await client.start_notify(HR_CHAR, self._ble_handler)
+
+				while not self._stop.is_set():
+					await asyncio.sleep(1)
+
+		except Exception as e:
+			print("[BLE] connection error:", e)
+			raise
+
+
+	def _ble_handler(self, sender, data):
+		try:
+			flags = data[0]
+
+			if flags & 0x01:
+				bpm = int.from_bytes(data[1:3], "little")
+			else:
+				bpm = data[1]
+
+			with self._lock:
+				self._latest_bpm = max(40, min(200, bpm))
+				self.last_ble_update = time.time()
+		except:
+			pass
+receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN, ble_address="F7:0F:C7:B2:51:BB")
 receiver.start()
 #===============================================================================
 class Player:
@@ -257,7 +356,7 @@ class Player:
 		self.vel_y = 0
 		self.speed = 6
 		self.sprintSpeed = 12
-		self.gravity = -15
+		self.gravity = -13
 		self.jump = False
 
 		self.yaw = 90
@@ -338,8 +437,8 @@ class Player:
 		gluLookAt(x + shake_x, y + shake_y, z, x+f[0], y+f[1], z+f[2], 0, 1, 0)
 
 	def get_intensity(self):
-		threshold = 100
-		max_bpm = 160
+		threshold = 90
+		max_bpm = 150
 
 		if self.bpm <= threshold:
 			return 0
@@ -362,7 +461,7 @@ class Player:
 
 	def get_bpm_factor(self):
 		min_bpm = 60
-		max_bpm = 160
+		max_bpm = 180
 
 		bpm = max(min_bpm, min(max_bpm, self.bpm))
 
@@ -400,7 +499,35 @@ class Door:
 
 		return in_xz and in_y
 
-#========================================================================
+#=======================================================================
+class SpikeTrap:
+	def __init__(self, pos, size):
+		self.pos = pos
+		self.size = size
+
+	def draw(self):
+		draw_pyramid_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 1, 0))
+
+	def check_collision(self, player):
+		px, py, pz = player.pos
+		sx, sy, sz = self.pos
+		size_x, size_y, size_z = self.size
+
+		player_half = 0.5
+
+		if py < sy or py > sy + size_y + player_half:
+			return False
+
+		h = (py - sy) / size_y
+
+		max_radius_x = size_x * (1 - h)
+		max_radius_z = size_z * (1 - h)
+
+		dx = abs(px - sx)
+		dz = abs(pz - sz)
+		return dx < (max_radius_x + player_half) and dz < (max_radius_z + player_half)
+
+#=======================================================================
 class MovingPlatform:
 	def __init__(self, start_pos, size, axis="x", range=5, speed=2):
 		self.start_pos = list(start_pos)
@@ -490,13 +617,13 @@ class LevelSelection:
 
 		draw_text("Level 1", self.LVL1_RECT.centerx - 40, self.LVL1_RECT.centery - 15)
 		draw_text("Level 2", self.LVL2_RECT.centerx - 40, self.LVL2_RECT.centery - 15)
-		draw_text("Level 3", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
+		draw_text("Level 3(WIP)", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
 
 
 		end_2d()
 #=======================================================================================
 class Lvl:
-	def __init__(self, grounds=None, platforms=None):
+	def __init__(self, grounds=None, platforms=None, spikes=None):
 			#x  y,  z, scale_x, scale_y, scale_z
 		self.GROUNDS = grounds if grounds is not None else[]
 		self.PLATFORMS_POS = platforms if platforms is not None else[]
@@ -603,6 +730,23 @@ class LvlOne:
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player= Player()
+
+		self.start_time = time.time()
+		self.finish_time = None
+
+	#Below is how you generate individual spikes
+		#self.spikes = [
+		#	SpikeTrap([0, 0, 20], [0.7, 1.5, 0.7]),
+		#	SpikeTrap([1, 0, 20], [0.7, 1.5, 0.7]),
+		#	SpikeTrap([-1, 0, 20], [0.7, 1.5, 0.7])
+	#	]
+		self.spikes = []
+
+		for x in range(-4, 5, 1): #spikes start at(#, go upto #, steped by # that controls spacing)
+			self.spikes.append(
+				SpikeTrap([x, 1.5, 20], [0.7, 1.5, 0.7]) 
+			)
+
 		self.level= Lvl(
 			grounds=[
 			[0, -1, 25, 4, 1, 15], #arguments[position x,y,z scale x,y,z]
@@ -612,7 +756,8 @@ class LvlOne:
 			[-3, 1, 2],
 			[-1, 3, -7],
 			[3, 4, -17]
-		]
+		],
+
 	)
 
 		self.door = Door([0, 2, -50], [1, 2, 1], "level2") #This is the line you change to move the door
@@ -625,6 +770,9 @@ class LvlOne:
 				return PauseMenu(self)
 	def on_enter(self):
 		self.next_state = None
+
+		self.start_time = time.time()
+		self.finish_time = None
 
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
@@ -654,7 +802,15 @@ class LvlOne:
 			self.player.respawn()
 
 		if self.door.check_collision(self.player): #This line checks for the collision between player and door object
+			self.finish_time = time.time() - self.start_time
+			print("Level Completed In:", self.finish_time)
 			self.next_state = self.door.targetLevel
+
+
+		for spike in self.spikes:
+			if spike.check_collision(self.player):
+				self.player.respawn()
+
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -665,9 +821,12 @@ class LvlOne:
 
 		self.level.draw()
 		self.door.draw() #every draw needs this line to make the door appear in the level
+		for spike in self.spikes:
+			spike.draw()
 
 		begin_2d()
 
+		elapsed = time.time() - self.start_time
 		mode_text = "None"
 		if inputMode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
@@ -683,6 +842,9 @@ class LvlOne:
 
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
 		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
+		draw_text(f"Time: {elapsed:.2f}s", 20, 160)
+		if self.finish_time is not None:
+			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
 
 		end_2d()
@@ -692,6 +854,9 @@ class LvlTwo:
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
+		self.start_time = time.time()
+		self.finish_time = None
+
 		self.level = Lvl(
 			grounds=[
 			[0, -1, 30, 3, 1, 15],
@@ -719,6 +884,8 @@ class LvlTwo:
 				pygame.event.set_grab(False)
 				return PauseMenu(self)
 	def on_enter(self):
+		self.start_time = time.time()
+		self.finish_time = None
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		pygame.mouse.get_rel()
@@ -751,7 +918,9 @@ class LvlTwo:
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
 		if self.door.check_collision(self.player):
-			return self.door.targetLevel
+			self.finish_time = time.time() - self.start_time
+			print("Level complete In:", self.finish_time)
+			self.next_state = self.door.targetLevel
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -767,6 +936,7 @@ class LvlTwo:
 
 		begin_2d()
 
+		elapsed = time.time() - self.start_time
 		mode_text = "None"
 		if inputMode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
@@ -781,6 +951,9 @@ class LvlTwo:
 
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
 #		draw_text(f"Emotion: {self.player.emotion}", 20, 140) 
+		draw_text(f"Time: {elapsed:.2f}s", 20, 160)
+		if self.finish_time is not None:
+			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
 
 		end_2d()
@@ -857,7 +1030,7 @@ class LvlThree():
 
 		training_text = "ON" if trainingMode else "OFF"
 
-		draw_text("Level Three", 20, 40)
+		draw_text("Level Three (WIP)", 20, 40)
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
@@ -1132,6 +1305,7 @@ class ModeSelection:
 		end_2d()
 #=============================================================================================================
 def main_menu():
+	game_start = time.time()
 	currentState = MainMenu() #calls the class and sets it to currentState
 
 	menu = True
