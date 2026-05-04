@@ -348,7 +348,128 @@ class MultiInputReceiver:
 			pass
 receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN, ble_address="F7:0F:C7:B2:51:BB")
 receiver.start()
-#===============================================================================
+#=================================================================
+#.obj loader to import 3D models
+# If you are trying to import a model you need to go to each lvls __init__ and add ->
+# <self.my_model = OBJModel("filepath/obj")> the self.my_model can be changed to what you need
+# you will also have to upadte the draw functions  with draw_obj(self.my_model, position=(0, 2, 10), scale=1)
+class OBJModel:
+	def __init__(self, filename):
+		self.vertices = []
+		self.normals = []
+		self.texcoords = []
+		self.faces = []
+		self.materials = {}
+		self.current_material = None
+
+		with open(filename, "r") as f:
+			for line in f:
+				if line.startswith("mtllib"):
+					base_dir = os.path.dirname(filename)
+					mtl_file = line.split()[1]
+					mtl_path = os.path.join(base_dir, mtl_file)
+
+					print("OBJ file:", filename)
+					print("Resolved MTL path:", mtl_path)
+					print("Resovled base dir:", base_dir)
+					if os.path.exists(mtl_path):
+						self.materials = load_mtl(mtl_path)
+					else:
+						print("MTL NOT FOUND", mtl_path)
+
+				elif line.startswith("usemtl"):
+					self.current_material = line.split()[1]
+
+				elif line.startswith("v "):
+					parts = line.strip().split()
+					self.vertices.append(tuple(map(float, parts[1:4])))
+
+				elif line.startswith("vn "):
+					parts = line.strip().split()
+					self.normals.append(tuple(map(float, parts[1:4])))
+
+				elif line.startswith("vt "):
+					self.texcoords.append(tuple(map(float, line.split()[1:3])))
+
+				elif line.startswith("f "):
+					parts = line.strip().split()[1:]
+					face = []
+
+					for p in parts:
+						vals = p.split("/")
+						v_idx = int(vals[0]) - 1 if vals[0] else None
+						vt_idx = int(vals[1]) - 1 if len(vals) > 1 and vals[1] else None
+						vn_idx = int(vals[2]) - 1 if len(vals) > 2 and vals[2] else None
+						face.append((v_idx, vt_idx, vn_idx)) #order matters v_idx, vt_idx, vn_idx
+					self.faces.append((face, self.current_material))
+
+#======================================================================
+
+
+
+def draw_obj(model, position=(0,0,0), scale=1, color=(1,1,1)):
+	glPushMatrix()
+	glTranslatef(*position)
+	glScalef(scale, scale, scale)
+
+	glEnable(GL_TEXTURE_2D)
+
+	for face, material in model.faces:
+		if material and material in model.materials:
+			tex = model.materials[material].get("texture")
+			if tex:
+				glBindTexture(GL_TEXTURE_2D, tex)
+
+		glBegin(GL_POLYGON) #GL_POLYGON will work for small mesh/porps but be warned that bigger objects will cause performance issues
+		for v_idx, vt_idx, vn_idx in face:
+			if vt_idx is not None:
+				glTexCoord2fv(model.texcoords[vt_idx])
+			if vn_idx is not None:
+				glNormal3fv(model.normals[vn_idx])
+
+			glVertex3fv(model.vertices[v_idx])
+		glEnd()
+
+	glDisable(GL_TEXTURE_2D)
+	glPopMatrix()
+
+def load_mtl(filename):
+	print("Loading MTL:", filename)
+
+	materials = {}
+	current = None
+	basse_dir = os.path.dirname(os.path.abspath(filename))
+
+	with open(filename, "r") as f:
+		for line in f:
+			if line.startswith("newmtl"):
+				current = line.split()[1]
+				materials[current] = {}
+			elif line.startswith("map_Kd") and current:
+				base_dir = os.path.dirname(filename)
+
+				texture_file = line.split()[1]
+				texture_file = os.path.join(base_dir, texture_file)
+				print("Loading Textures:", texture_file)
+
+				materials[current]["texture"] = load_texture(texture_file)
+	return materials
+
+def load_texture(image_path):
+	surface = pygame.image.load(image_path)
+	image = pygame.image.tostring(surface, "RGBA", True)
+	width, height = surface.get_size()
+
+	tex_id = glGenTextures(1)
+	glBindTexture(GL_TEXTURE_2D, tex_id)
+
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image)
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+
+	return tex_id
+#=================================================================
 class Player:
 	def __init__(self, spawn_pos = [0, 2, 35]):
 		self.spawn_pos = list(spawn_pos)
@@ -438,7 +559,7 @@ class Player:
 
 	def get_intensity(self):
 		threshold = 90
-		max_bpm = 150
+		max_bpm = 160
 
 		if self.bpm <= threshold:
 			return 0
@@ -505,8 +626,8 @@ class SpikeTrap:
 		self.pos = pos
 		self.size = size
 
-	def draw(self):
-		draw_pyramid_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 1, 0))
+	def draw(self, model):
+		draw_obj(model, position = self.pos, scale = self.size[0])
 
 	def check_collision(self, player):
 		px, py, pz = player.pos
@@ -734,18 +855,23 @@ class LvlOne:
 		self.start_time = time.time()
 		self.finish_time = None
 
+		self.spike_model = OBJModel("models/SpikeTrap.obj")
+
 	#Below is how you generate individual spikes
 		#self.spikes = [
 		#	SpikeTrap([0, 0, 20], [0.7, 1.5, 0.7]),
 		#	SpikeTrap([1, 0, 20], [0.7, 1.5, 0.7]),
 		#	SpikeTrap([-1, 0, 20], [0.7, 1.5, 0.7])
 	#	]
-		self.spikes = []
+		self.spikes = [
+			SpikeTrap([0, 0, 20], [14, 2, 5])
+		]
 
-		for x in range(-4, 5, 1): #spikes start at(#, go upto #, steped by # that controls spacing)
-			self.spikes.append(
-				SpikeTrap([x, 1.5, 20], [0.7, 1.5, 0.7]) 
-			)
+	#	Below is how to create spikes in a row
+	#	for x in range(-4, 5, 1): #spikes start at(#, go upto #, steped by # that controls spacing)
+	#		self.spikes.append(
+	#			SpikeTrap([x, 1.5, 20], [0.7, 1.5, 0.7]) 
+	#		)
 
 		self.level= Lvl(
 			grounds=[
@@ -821,12 +947,15 @@ class LvlOne:
 
 		self.level.draw()
 		self.door.draw() #every draw needs this line to make the door appear in the level
+
 		for spike in self.spikes:
-			spike.draw()
+			spike.draw(self.spike_model)
 
 		begin_2d()
 
 		elapsed = time.time() - self.start_time
+		fps = clock.get_fps()
+
 		mode_text = "None"
 		if inputMode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
@@ -846,6 +975,9 @@ class LvlOne:
 		if self.finish_time is not None:
 			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
+
+		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
+
 
 		end_2d()
 #=========================================================================================================
@@ -1311,6 +1443,8 @@ def main_menu():
 	menu = True
 	while menu:
 		dt = clock.tick(60) / 1000
+		fps = clock.get_fps()
+
 		events = pygame.event.get()
 		result = None
 
