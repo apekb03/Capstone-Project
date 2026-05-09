@@ -11,6 +11,9 @@ import os
 import random
 import time
 
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 from bleak import BleakClient
 HR_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
 from enum import Enum
@@ -22,6 +25,12 @@ from OpenGL.GLU import *
 import math
 
 pygame.init()
+pygame.font.init()
+
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 inputMode = None
 trainingMode = False
@@ -34,6 +43,7 @@ FONT = pygame.font.Font(None, 36)
 PULSOID_TOKEN = os.environ.get("PULSOID_TOKEN")
 
 SCREEN = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
+glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
 pygame.display.set_caption("Heart Beat Devil")
 
 class InputMode(Enum):
@@ -349,6 +359,37 @@ class MultiInputReceiver:
 receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN, ble_address="F7:0F:C7:B2:51:BB")
 receiver.start()
 #=================================================================
+def submit_score(level_name, player_name, time_seconds, deaths):
+	try:
+		db.collection("leaderboards").add({
+			"level": level_name,
+			"player": player_name,
+			"time": round(time_seconds, 2),
+			"deaths": deaths,
+			"timestamp": firestore.SERVER_TIMESTAMP
+		})
+	except Exception as e:
+		print("Firebase submit error:", e)
+
+def get_top_scores(level_name, limit=5):
+	try:
+		query = (
+			db.collection("leaderboards")
+			.where("level", "==", level_name)
+			.order_by("time")
+			.limit(limit)
+		)
+
+		scores = []
+
+		for doc in query.stream():
+			scores.append(doc.to_dict())
+
+		return scores
+	except Exception as e:
+		print("Leaderboard fetch error:", e)
+		return[]
+#================================================================
 #.obj loader to import 3D models
 # If you are trying to import a model you need to go to each lvls __init__ and add ->
 # <self.my_model = OBJModel("filepath/obj")> the self.my_model can be changed to what you need
@@ -474,6 +515,7 @@ class Player:
 	def __init__(self, spawn_pos = [0, 2, 35]):
 		self.spawn_pos = list(spawn_pos)
 		self.pos = list(spawn_pos)
+		self.deaths = 0
 		self.vel_y = 0
 		self.speed = 6
 		self.sprintSpeed = 12
@@ -591,6 +633,8 @@ class Player:
 		return 0.7 + t * 1.3
 
 	def respawn(self):
+		self.deaths += 1
+
 		self.pos = list(self.spawn_pos)
 		self.vel_y = 0
 		self.jump = False
@@ -715,11 +759,11 @@ class LevelSelection:
 				return "quit"
 			if event.type == MOUSEBUTTONDOWN and event.button == 1:
 				if self.LVL1_RECT.collidepoint(event.pos):
-					self.next_state = ("start", "level1")
+					return ("start", "level1")
 				if self.LVL2_RECT.collidepoint(event.pos):
-					self.next_state = ("start", "level2")
+					return ("start", "level2")
 				if self.LVL3_RECT.collidepoint(event.pos):
-					self.next_state = ("start", "level3")
+					return ("start", "level3")
 
 	def update(self, dt):
 		pass
@@ -846,8 +890,6 @@ class Lvl:
 #================================================================================
 class LvlOne:
 	def __init__(self):
-		self.next_state = None
-
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player= Player()
@@ -929,8 +971,9 @@ class LvlOne:
 
 		if self.door.check_collision(self.player): #This line checks for the collision between player and door object
 			self.finish_time = time.time() - self.start_time
-			print("Level Completed In:", self.finish_time)
-			self.next_state = self.door.targetLevel
+
+			self.next_state = NameEntryScreen("Level 1", self.finish_time, self.player.deaths, self.door.targetLevel)
+
 
 
 		for spike in self.spikes:
@@ -986,6 +1029,7 @@ class LvlTwo:
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
+
 		self.start_time = time.time()
 		self.finish_time = None
 
@@ -1016,8 +1060,11 @@ class LvlTwo:
 				pygame.event.set_grab(False)
 				return PauseMenu(self)
 	def on_enter(self):
+		self.next_state = None
+
 		self.start_time = time.time()
 		self.finish_time = None
+
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		pygame.mouse.get_rel()
@@ -1049,10 +1096,11 @@ class LvlTwo:
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
+
 		if self.door.check_collision(self.player):
 			self.finish_time = time.time() - self.start_time
-			print("Level complete In:", self.finish_time)
-			self.next_state = self.door.targetLevel
+
+			self.next_state = NameEntryScreen("Level 2", self.finish_time, self.player.deaths, self.door.targetLevel)
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -1069,6 +1117,8 @@ class LvlTwo:
 		begin_2d()
 
 		elapsed = time.time() - self.start_time
+		fps = clock.get_fps()
+
 		mode_text = "None"
 		if inputMode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
@@ -1088,12 +1138,12 @@ class LvlTwo:
 			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
 
+		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
+
 		end_2d()
 #========================================================================================
 class LvlThree():
 	def __init__(self):
-		self.next_state = None
-
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
@@ -1218,11 +1268,11 @@ class MainMenu:
 				mousePos = event.pos
 
 				if self.START_RECT.collidepoint(mousePos):
-					self.next_state = "start"
+					return "start"
 				elif self.LEVEL_RECT.collidepoint(mousePos):
-					self.next_state = "lvlSelection"
+					return "lvlSelection"
 				elif self.QUIT_RECT.collidepoint(mousePos):
-					self.next_state = "quit"
+					return "quit"
 
 
 	def update(self, dt):
@@ -1247,7 +1297,84 @@ class MainMenu:
 		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 100, 120)
 
 		end_2d()
-#===================================================================================
+#================================================================
+class LvlComplete:
+	def __init__(self, level_name, finish_time, deaths, next_level):
+		self.level_name = level_name
+		self.finish_time = finish_time
+		self.deaths = deaths
+		self.next_level = next_level
+
+		self.next_state = None
+
+		pygame.mouse.set_visible(True)
+		pygame.event.set_grab(False)
+
+		self.player_name = "Player"
+
+		self.scores = get_top_scores(level_name)
+
+		self.button_width = 300
+		self.button_height = 60
+		self.spacing = 20
+
+		cx = SCREEN_WIDTH //2
+		start_y = SCREEN_HEIGHT //2
+
+		self.CONTINUE_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
+		self.CONTINUE_RECT.center = (cx, start_y)
+
+	def handleEvents(self, events):
+		for event in events:
+			if event.type == pygame.QUIT:
+				return "quit"
+
+			if event.type == pygame.MOUSEBUTTONDOWN:
+				if self.CONTINUE_RECT.collidepoint(event.pos):
+					self.next_state = self.next_level
+
+	def update(self, dt):
+		pass
+
+	def draw(self):
+		begin_2d()
+
+		glColor4f(0, 0, 0, 0.7)
+		glBegin(GL_QUADS)
+		glVertex2f(0, 0)
+		glVertex2f(SCREEN_WIDTH, 0)
+		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
+		glVertex2f(0, SCREEN_HEIGHT)
+		glEnd()
+
+		draw_text(f"{self.level_name} Level Complete!", SCREEN_WIDTH//2 - 180, 100)
+		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 140, 180)
+		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 140, 220)
+		draw_text("Leaderboard", SCREEN_WIDTH//2 -100, 320)
+
+		y = 320
+
+		for i, score in enumerate(self.scores):
+
+			line = (
+				f"{i+1}. "
+				f"{score['player']} "
+				f"{score['time']:.2f}s "
+				f"Deaths:{score['deaths']}"
+			)
+
+			draw_text(line, SCREEN_WIDTH//2 - 250, y)
+
+			y += 50
+
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.CONTINUE_RECT)
+
+		draw_text("Continue", self.CONTINUE_RECT.centerx - 70, self.CONTINUE_RECT.centery - 15)
+
+
+		end_2d()
+
+#================================================================
 class PauseMenu:
 	def __init__(self, previous_state):
 		self.previous_state = previous_state
@@ -1311,6 +1438,127 @@ class PauseMenu:
 		end_2d()
 
 #===================================================================================
+class NameEntryScreen:
+	def __init__(self, level_name, finish_time, deaths, next_level):
+		self.level_name = level_name
+		self.finish_time = finish_time
+		self.deaths = deaths
+		self.next_level = next_level
+		self.next_state = None
+		self.player_name = ""
+
+		pygame.mouse.set_visible(True)
+		pygame.event.set_grab(False)
+
+		self.SUBMIT_RECT = pygame.Rect(SCREEN_WIDTH//2 - 150, 550, 300, 60)
+
+	def handleEvents(self, events):
+		for event in events:
+			if event.type == pygame.QUIT:
+				return "quit"
+
+			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_BACKSPACE:
+					self.player_name = self.player_name[:-1]
+				elif event.key == pygame.K_RETURN:
+					if len(self.player_name.strip()) > 0:
+						return self.submit_player_score()
+
+				else:
+					if len(self.player_name) < 16:
+						if event.unicode.isprintable():
+							self.player_name += event.unicode
+
+			if event.type == pygame.MOUSEBUTTONDOWN:
+				if self.SUBMIT_RECT.collidepoint(event.pos):
+					if len(self.player_name.strip()) > 0:
+						return self.submit_player_score()
+
+	def submit_player_score(self):
+		submit_score(
+			self.level_name,
+			self.player_name,
+			self.finish_time,
+			self.deaths
+		)
+
+		return LeaderboardScreen(self.level_name, self.next_level)
+
+	def update(self, dt):
+		pass
+
+	def draw(self):
+		glClearColor(0, 0, 0, 1)
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+		begin_2d()
+
+		draw_text("Level comlpete!", SCREEN_WIDTH//2 - 100, 100)
+		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 80, 200)
+		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 80, 250)
+		draw_text("Enter Your Name", SCREEN_WIDTH//2 - 100, 350)
+
+		pygame.draw.rect(SCREEN, (60,60,60), (SCREEN_WIDTH//2 - 200, 400, 400, 70))
+
+		draw_text(self.player_name, SCREEN_WIDTH//2 - 80, 440)
+
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.SUBMIT_RECT)
+
+		draw_text("Submit Score", self.SUBMIT_RECT.centerx - 95, self.SUBMIT_RECT.centery - 16)
+
+		end_2d()
+#========================================================
+class LeaderboardScreen:
+	def __init__(self, level_name, next_level):
+		self.level_name = level_name
+		self.next_level = next_level
+		self.next_state = None
+
+		pygame.mouse.set_visible(True)
+		pygame.event.set_grab(False)
+
+		self.scores = get_top_scores(level_name)
+
+		self.CONTINUE_RECT = pygame.Rect(SCREEN_WIDTH//2 -150, 850, 300, 60)
+
+	def handleEvents(self, events):
+		for event in events:
+			if event.type == pygame.QUIT:
+				return "quit"
+
+			if event.type == pygame.MOUSEBUTTONDOWN:
+				if self.CONTINUE_RECT.collidepoint(event.pos):
+					return self.next_level
+
+	def update(self, dt):
+		pass
+
+	def draw(self):
+		glClearColor(0, 0, 0, 1)
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+		begin_2d()
+
+		draw_text(f"{self.level_name} Leaderboard", SCREEN_WIDTH//2 - 110, 100)
+		y = 220
+
+		for i, score in enumerate(self.scores):
+
+			line = (
+				f"{i+1}. "
+				f"{score['player']} "
+				f"{score['time']:.2f}s "
+				f"Deaths:{score['deaths']}"
+			)
+
+			draw_text(line, SCREEN_WIDTH//2 - 130, y)
+			y += 60
+
+		pygame.draw.rect(SCREEN, (100, 100, 100), self.CONTINUE_RECT)
+		draw_text("Continue", self.CONTINUE_RECT.centerx - 60, self.CONTINUE_RECT.centery - 30)
+
+		end_2d()
+#=========================================================
 class ModeSelection:
 	def __init__(self):
 		pygame.mouse.set_visible(True)
@@ -1322,7 +1570,7 @@ class ModeSelection:
 
 		#Button Variable for selections
 		self.button_width = 350
-		self.button_height = 100
+		self.button_height = 120
 		self.button_spacing = 20
 
 		cx = SCREEN_WIDTH//2
@@ -1363,12 +1611,12 @@ class ModeSelection:
 				if event.key == pygame.K_1:
 					inputMode = InputMode.HEART_RATE
 					trainingMode = self.training_mode
-					return self.next_state
+					return self.target_level
 
 				if event.key == pygame.K_2:
 					inputMode = InputMode.EMOTION
 					trainingMode = self.training_mode
-					return self.next_state
+					return self.target_level
 
 				if event.key == pygame.K_t:
 					self.training_mode = not self.training_mode
@@ -1379,12 +1627,12 @@ class ModeSelection:
 				if self.MODE1_RECT.collidepoint(mousePos):
 					inputMode = InputMode.HEART_RATE
 					trainingMode = self.training_mode
-					self.next_state = self.target_level
+					return self.target_level
 
 				elif self.MODE2_RECT.collidepoint(mousePos):
 					inputMode = InputMode.EMOTION
 					trainingMode = self.training_mode
-					self.next_state = self.target_level
+					return self.target_level
 				elif self.TRAIN_RECT.collidepoint(mousePos):
 					self.training_mode = not self.training_mode
 
@@ -1436,9 +1684,64 @@ class ModeSelection:
 
 		end_2d()
 #=============================================================================================================
+def resolve_state(name):
+	if name == "level1":
+		return LvlOne()
+
+	elif name == "level2":
+		return LvlTwo()
+
+	elif name == "level3":
+		return LvlThree()
+
+	elif name == "main_menu":
+		return MainMenu()
+
+	elif name == "lvlSelection":
+		return LevelSelection()
+
+	elif name == "start":
+		return ModeSelection()
+
+	return None
+
+def apply_state_change(currentState, new_state):
+	if new_state == "quit":
+		pygame.quit()
+		sys.exit()
+
+	if isinstance(new_state, str):
+		resolved = resolve_state(new_state)
+		if resolved:
+			if hasattr(resolved, "on_enter"):
+				resolved.on_enter()
+			return resolved
+		print("unknown state:", new_state)
+		return currentState
+
+	if isinstance(new_state, tuple):
+		menu_target, level = new_state
+		if menu_target == "start":
+			ms = ModeSelection()
+			ms.target_level = level
+			if hasattr(ms, "on_enter"):
+				ms.on_enter()
+			return ms
+
+	if hasattr(new_state, "draw"):
+		if hasattr(new_state, "on_enter"):
+			new_state.on_enter()
+		return new_state
+
+	print("Invalid state:", type(new_state))
+	return currentState
+
 def main_menu():
 	game_start = time.time()
 	currentState = MainMenu() #calls the class and sets it to currentState
+
+	if hasattr(currentState, "on_enter"):
+		currentState.on_enter()
 
 	menu = True
 	while menu:
@@ -1446,7 +1749,6 @@ def main_menu():
 		fps = clock.get_fps()
 
 		events = pygame.event.get()
-		result = None
 
 		global paused
 
@@ -1457,53 +1759,25 @@ def main_menu():
 
 		if hasattr(currentState, "handleEvents"):
 			result = currentState.handleEvents(events)
+
 			if result == "quit":
 				pygame.quit()
 				return
 
 			if result is not None:
-				currentState = result
-				if hasattr(currentState, "on_enter"):
-					currentState.on_enter()
+				currentState = apply_state_change(currentState, result)
+
+		if hasattr(currentState, "next_state") and currentState.next_state is not None:
+			currentState = apply_state_change(currentState, currentState.next_state)
+			currentState.next_state = None
 
 		if hasattr(currentState, "update"):
 			currentState.update(dt)
 
-		if hasattr(currentState, "next_state") and currentState.next_state is not None:
-			new_state = currentState.next_state
-			currentState.next_state = None
+		if hasattr(currentState, "draw"):
+			currentState.draw()
 
-			if new_state == "quit":
-				pygame.quit()
-				return
 
-			if new_state == "start":
-				currentState = ModeSelection()
-
-			elif new_state == "lvlSelection":
-				currentState = LevelSelection()
-
-			elif new_state == "main_menu":
-				currentState = MainMenu()
-
-			elif isinstance(new_state, tuple):
-				menu_target, level = new_state
-
-				if menu_target == "start":
-					ms = ModeSelection()
-					ms.target_level = level
-					currentState = ms
-			elif isinstance(new_state, str):
-				if new_state == "level1":
-					currentState = LvlOne()
-
-				elif new_state == "level2":
-					currentState = LvlTwo()
-
-				elif new_state == "level3":
-					currentState = LvlThree()
-
-		currentState.draw()
 		pygame.display.flip()
 
 	pygame.quit()
