@@ -1,1 +1,44 @@
-Do not add anything into this without asking me first. This branch is for striclty tunring this into 3D
+# Capstone 3DrageBait — Tech Stack
+
+## Language
+- Python 3
+
+## Core runtime / dependencies
+- `pygame`: windowing, input handling, fonts, and basic 2D overlays
+- `PyOpenGL` (+ `PyOpenGL-accelerate`): 3D rendering + HUD text blits
+- `numpy` (indirect via other libs): common for vision/ML stacks
+
+## Game logic & I/O
+- Keyboard/mouse: `pygame` event/input polling
+- Camera / face-mode emotion labels (Mode 2):
+  - `opencv-python`: webcam frame capture + preprocessing
+  - `deepface`: facial emotion inference
+  - `tensorflow`: DeepFace backend requirements
+- Heart rate input (Mode 1):
+  - `pulsoid_heartrate.py` (local module in repo): Pulsoid token validation + data fetching
+  - `bleak`: Bluetooth Low Energy client (used by the project’s input receiver logic)
+
+## Backend / persistence (Firebase)
+The project uses Firebase Admin SDK:
+- `firebase-admin`
+  - Firestore: user profile documents (for storing/displaying user info)
+  - Realtime Database: leaderboard writes/reads under `leaderboards/<Level X>/`
+- `python-dotenv`: reads `.env` so the app can configure Firebase + tokens
+- `requests`: used by the Firebase auth / REST helpers
+
+## Python packages (see `requirements.txt`)
+- `pygame`
+- `PyOpenGL`
+- `PyOpenGL-accelerate`
+- `bleak`
+- `firebase-admin`
+- `python-dotenv`
+- `requests`
+- `opencv-python>=4.8`
+- `deepface>=0.0.90`
+- `tensorflow>=2.12`
+
+## Local configuration files
+- `.env`: tokens/URLs (Pulsoid token, Firebase RTDB URL or credentials path, etc.)
+- `firebase_key.json`: Firebase service account JSON (or use `FIREBASE_SERVICE_ACCOUNT_JSON`)
+

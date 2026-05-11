@@ -49,12 +49,12 @@ from menu_screens import (
 
 PULSOID_TOKEN = os.environ.get("PULSOID_TOKEN")
 
-SCREEN = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
+SCREEN = pygame.display.set_mode((1280, 720), DOUBLEBUF | OPENGL)
 ui.set_screen(SCREEN)
 ui.sync_frame_dimensions()
 
-SCREEN_WIDTH = config.SCREEN_WIDTH
-SCREEN_HEIGHT = config.SCREEN_HEIGHT
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 720
 WHITE = config.WHITE
 BLACK = config.BLACK
 

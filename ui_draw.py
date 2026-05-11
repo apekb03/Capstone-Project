@@ -404,11 +404,12 @@ def init_red_theme_fonts():
 	global FONT_RED_TITLE, FONT_RED_HEADING, FONT_RED_MENU, FONT_RED_LABEL, FONT_RED_SMALL
 	if FONT_RED_TITLE is not None:
 		return
-	FONT_RED_TITLE = pygame.font.Font(None, 110)
-	FONT_RED_HEADING = pygame.font.Font(None, 72)
-	FONT_RED_MENU = pygame.font.Font(None, 48)
-	FONT_RED_LABEL = pygame.font.Font(None, 34)
-	FONT_RED_SMALL = pygame.font.Font(None, 26)
+	# Slightly smaller hierarchy so the hero title and card headings don’t dwarf body/nav text.
+	FONT_RED_TITLE = pygame.font.Font(None, 88)
+	FONT_RED_HEADING = pygame.font.Font(None, 56)
+	FONT_RED_MENU = pygame.font.Font(None, 44)
+	FONT_RED_LABEL = pygame.font.Font(None, 30)
+	FONT_RED_SMALL = pygame.font.Font(None, 22)
 
 
 def _red_lerp(a, b, t):
@@ -595,14 +596,32 @@ def draw_red_nav_button(rect, title, subtitle, hover_t, accent=False):
 	if ht > 0.01:
 		red_gl_rect(x + 3, y + 1, w - 3, h - 2, 0.9, 0.15, 0.15, ht * 0.07)
 	tc = _red_lerp_color((160, 155, 165), RED_C_WHITE, ht)
-	ts = FONT_RED_MENU.render(title, True, tc)
+	# Fit text into the fixed button height by scaling font sizes with `h`.
+	# This avoids the two lines looking too cramped on smaller menu rows.
+	title_size = max(16, int(h * 0.46))
+	subtitle_size = max(12, int(h * 0.33))
+	title_font = pygame.font.Font(None, title_size)
+	subtitle_font = pygame.font.Font(None, subtitle_size)
+
+	ts = title_font.render(title, True, tc)
 	tw, th = ts.get_size()
-	ty = rect.centery - th - (4 if subtitle else 0)
-	red_draw_text_surface(ts, rect.centerx - tw // 2, ty)
+
 	if subtitle:
-		st = FONT_RED_SMALL.render(subtitle, True, _red_lerp_color(RED_C_TEXT_DIM, RED_C_TEXT, ht * 0.5))
+		sub_c = _red_lerp_color(RED_C_TEXT_DIM, RED_C_TEXT, ht * 0.5)
+		st = subtitle_font.render(subtitle, True, sub_c)
 		sw, sh = st.get_size()
-		red_draw_text_surface(st, rect.centerx - sw // 2, ty + th + 4)
+		gap = 4
+		total_h = th + gap + sh
+	else:
+		sw, sh = 0, 0
+		st = None
+		gap = 0
+		total_h = th
+
+	ty = int(rect.centery - total_h / 2)
+	red_draw_text_surface(ts, rect.centerx - tw // 2, ty)
+	if st is not None:
+		red_draw_text_surface(st, rect.centerx - sw // 2, ty + th + gap)
 
 
 def draw_red_main_title(cx, y_title=155):
@@ -610,7 +629,7 @@ def draw_red_main_title(cx, y_title=155):
 	init_red_theme_fonts()
 	ticks = pygame.time.get_ticks()
 	pulse = (math.sin(ticks * 0.0018) + 1) * 0.5
-	for off, sz, ga in [(8, 118, 30), (4, 112, 50)]:
+	for off, sz, ga in [(6, 98, 30), (3, 92, 50)]:
 		g = pygame.font.Font(None, sz).render("HEART BEAT DEVIL", True, RED_C_RED)
 		g.set_alpha(int(ga + pulse * 22))
 		gw, gh = g.get_size()
