@@ -1,0 +1,18 @@
+# Core game
+pygame
+PyOpenGL
+PyOpenGL-accelerate
+bleak
+
+# Firebase / auth
+firebase-admin
+python-dotenv
+requests
+
+# Pulsoid (optional)
+# (no extra package if using requests in pulsoid_heartrate)
+
+# Webcam facial emotion (mode 2 — FEAR, happy, angry, …)
+opencv-python>=4.8
+deepface>=0.0.90
+tensorflow>=2.12

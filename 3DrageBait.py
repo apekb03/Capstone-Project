@@ -11,12 +11,8 @@ import os
 import random
 import time
 
-import firebase_admin
-from firebase_admin import credentials, firestore
-
 from bleak import BleakClient
 HR_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
-from enum import Enum
 from dataclasses import dataclass
 from pulsoid_heartrate import get_heart_rate, validate_token
 from pygame.locals import *
@@ -24,31 +20,64 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
 
+_GAME_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def asset_path(*parts: str) -> str:
+	"""Resolve paths relative to this script so the game runs from any cwd."""
+	return os.path.normpath(os.path.join(_GAME_DIR, *parts))
+
+
 pygame.init()
 pygame.font.init()
 
-cred = credentials.Certificate("firebase_key.json")
-firebase_admin.initialize_app(cred)
+import config
+import facial_emotion
+import firebase_service  # noqa: F401
+import game_state as gs
+from game_types import InputMode
 
-db = firestore.client()
+import ui_draw as ui
+from menu_screens import (
+	LevelSelection,
+	MainMenu,
+	ModeSelection,
+	NameEntryScreen,
+	PauseMenu,
+	TitleScreen,
+)
 
-inputMode = None
-trainingMode = False
-
-SCREEN_WIDTH = 1920
-SCREEN_HEIGHT = 1080
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-FONT = pygame.font.Font(None, 36)
 PULSOID_TOKEN = os.environ.get("PULSOID_TOKEN")
 
-SCREEN = pygame.display.set_mode ((SCREEN_WIDTH, SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
+SCREEN = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
+ui.set_screen(SCREEN)
+
+SCREEN_WIDTH = config.SCREEN_WIDTH
+SCREEN_HEIGHT = config.SCREEN_HEIGHT
+WHITE = config.WHITE
+BLACK = config.BLACK
+
+begin_2d = ui.begin_2d
+end_2d = ui.end_2d
+draw_text = ui.draw_text
+draw_text_centered = ui.draw_text_centered
+draw_menu_backdrop = ui.draw_menu_backdrop
+draw_menu_button = ui.draw_menu_button
+draw_webcam_pip = ui.draw_webcam_pip
+FONT = ui.FONT
+FONT_TITLE = ui.FONT_TITLE
+FONT_SUB = ui.FONT_SUB
+UI_ACCENT = ui.UI_ACCENT
+UI_ACCENT_DIM = ui.UI_ACCENT_DIM
+UI_PANEL = ui.UI_PANEL
+UI_PANEL_BORDER = ui.UI_PANEL_BORDER
+UI_BTN_BG = ui.UI_BTN_BG
+UI_BTN_HOVER = ui.UI_BTN_HOVER
+UI_BTN_BORDER = ui.UI_BTN_BORDER
+UI_MUTED_TEXT = ui.UI_MUTED_TEXT
+
 glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
 pygame.display.set_caption("Heart Beat Devil")
-
-class InputMode(Enum):
-	HEART_RATE = 1
-	EMOTION = 2
 
 #OpenGL Matrixs and setups----
 glMatrixMode(GL_PROJECTION)
@@ -61,32 +90,6 @@ glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 glClearColor(0, 0, 0, 1)
 
 clock = pygame.time.Clock()
-
-#2D UI Render Layer
-def begin_2d():
-	glMatrixMode(GL_PROJECTION)
-	glPushMatrix()
-	glLoadIdentity()
-	glOrtho(0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, -1, 1)
-
-	glMatrixMode(GL_MODELVIEW)
-	glPushMatrix()
-	glLoadIdentity()
-	glDisable(GL_DEPTH_TEST)
-
-def end_2d():
-	glEnable(GL_DEPTH_TEST)
-	glPopMatrix()
-	glMatrixMode(GL_PROJECTION)
-	glPopMatrix()
-	glMatrixMode(GL_MODELVIEW)
-
-def draw_text(text, x, y):
-	"""renders text to OpenGL with the use of glDrawPixels"""
-	surface = FONT.render(text, True, WHITE)
-	text_data = pygame.image.tostring(surface, "RGBA", True)
-	glRasterPos2f(x, y)
-	glDrawPixels(surface.get_width(), surface.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
 
 def draw_screen_effects(player):
 	intensity = player.get_intensity()
@@ -216,6 +219,38 @@ def draw_pyramid_object(position, sx, sy, sz, color=(1, 0, 0)):
 def clamp(val, min_val, max_val):
 	return max(min_val, min(max_val, val))
 
+
+def emotion_visual_stress(emotion: str) -> float:
+	"""Screen shake / dim in emotion mode. FEAR = none (easier when scared)."""
+	e = (emotion or "NEUTRAL").strip().upper()
+	if e == "FEAR":
+		return 0.0
+	tab = {
+		"ANGRY": 0.78,
+		"SURPRISE": 0.58,
+		"DISGUST": 0.48,
+		"SAD": 0.35,
+		"HAPPY": 0.06,
+		"NEUTRAL": 0.0,
+	}
+	return max(0.0, min(1.0, tab.get(e, 0.2)))
+
+
+def emotion_enemy_stress(emotion: str) -> float:
+	"""Enemy / platform speed factor input (0–1). Lower = easier. FEAR is very low."""
+	e = (emotion or "NEUTRAL").strip().upper()
+	if e == "FEAR":
+		return 0.06
+	tab = {
+		"ANGRY": 0.78,
+		"SURPRISE": 0.58,
+		"DISGUST": 0.48,
+		"SAD": 0.35,
+		"HAPPY": 0.06,
+		"NEUTRAL": 0.0,
+	}
+	return max(0.0, min(1.0, tab.get(e, 0.2)))
+
 UDP_BIND_IP = "0.0.0.0"
 UDP_PORT = 5005
 UDP_TIMEOUT = 0.5
@@ -293,7 +328,15 @@ class MultiInputReceiver:
 				data, _addr = sock.recvfrom(512)
 				msg = data.decode("utf-8", errors="ignore").strip().upper()
 
-				valid_emotions = ["HAPPY", "NEUTRAL", "ANGRY"]
+				valid_emotions = [
+					"FEAR",
+					"SURPRISE",
+					"DISGUST",
+					"HAPPY",
+					"ANGRY",
+					"SAD",
+					"NEUTRAL",
+				]
 				found_emotion = False
 				for emo in valid_emotions:
 					if emo in msg:
@@ -358,37 +401,7 @@ class MultiInputReceiver:
 			pass
 receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN, ble_address="F7:0F:C7:B2:51:BB")
 receiver.start()
-#=================================================================
-def submit_score(level_name, player_name, time_seconds, deaths):
-	try:
-		db.collection("leaderboards").add({
-			"level": level_name,
-			"player": player_name,
-			"time": round(time_seconds, 2),
-			"deaths": deaths,
-			"timestamp": firestore.SERVER_TIMESTAMP
-		})
-	except Exception as e:
-		print("Firebase submit error:", e)
-
-def get_top_scores(level_name, limit=5):
-	try:
-		query = (
-			db.collection("leaderboards")
-			.where("level", "==", level_name)
-			.order_by("time")
-			.limit(limit)
-		)
-
-		scores = []
-
-		for doc in query.stream():
-			scores.append(doc.to_dict())
-
-		return scores
-	except Exception as e:
-		print("Leaderboard fetch error:", e)
-		return[]
+facial_emotion.start(receiver)
 #================================================================
 #.obj loader to import 3D models
 # If you are trying to import a model you need to go to each lvls __init__ and add ->
@@ -567,6 +580,11 @@ class Player:
 		sprintSpeed = self.sprintSpeed * dt
 		speed = self.speed * dt
 
+		if gs.input_mode == InputMode.EMOTION and (self.emotion or "").upper() == "FEAR":
+			ease = 1.1
+			sprintSpeed *= ease
+			speed *= ease
+
 		current_speed = sprintSpeed if keys[K_LSHIFT] else speed
 
 		if keys[K_w]:
@@ -692,6 +710,9 @@ class Player:
 
 #THIS CHANGES THE THRESHOLD OF WHEN EFFECTS START
 	def get_intensity(self):
+		if gs.input_mode == InputMode.EMOTION:
+			return emotion_visual_stress(self.emotion)
+
 		threshold = 90 
 #		threshold = 60
 		max_bpm = 180
@@ -716,6 +737,10 @@ class Player:
 		self.dim_intensity = intensity
 
 	def get_bpm_factor(self):
+		if gs.input_mode == InputMode.EMOTION:
+			t = emotion_enemy_stress(self.emotion)
+			return 0.7 + t * 1.3
+
 		min_bpm = 60
 		max_bpm = 180
 
@@ -890,61 +915,7 @@ class Enemy:
 		draw_cube(self.color)
 		glPopMatrix()
 
-#===================================================================
-class LevelSelection:
-	def __init__(self):
-		self.button_width = 250
-		self.button_height = 50
-		self.button_spacing = 60
 
-		lvl1_y = 200
-		lvl2_y = lvl1_y + self.button_spacing
-		lvl3_y = lvl2_y + self.button_spacing
-		
-		#level 1 button
-		self.LVL1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL1_RECT.center = (SCREEN_WIDTH// 2, lvl1_y)
-		#level 2 button
-		self.LVL2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL2_RECT.center = (SCREEN_WIDTH//2, lvl2_y)
-		#level 3 button
-		self.LVL3_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL3_RECT.center = (SCREEN_WIDTH//2, lvl3_y)
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-			if event.type == MOUSEBUTTONDOWN and event.button == 1:
-				if self.LVL1_RECT.collidepoint(event.pos):
-					return ("start", "level1")
-				if self.LVL2_RECT.collidepoint(event.pos):
-					return ("start", "level2")
-				if self.LVL3_RECT.collidepoint(event.pos):
-					return ("start", "level3")
-
-	def update(self, dt):
-		pass
-	def draw(self):
-		#Clears the screen
-		glClearColor(0.2, 0.2, 0.2, 1)
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-		#Calls the 2D OpenGl Render projection
-		begin_2d()
-
-		glColor3f(0.4, 0.4, 0.4)
-
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL1_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL2_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL3_RECT)
-
-		draw_text("Level 1", self.LVL1_RECT.centerx - 40, self.LVL1_RECT.centery - 15)
-		draw_text("Level 2", self.LVL2_RECT.centerx - 40, self.LVL2_RECT.centery - 15)
-		draw_text("Level 3(WIP)", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
-
-
-		end_2d()
-#=======================================================================================
 class Lvl:
 	def __init__(self, grounds=None, platforms=None, spikes=None):
 			#x  y,  z, scale_x, scale_y, scale_z
@@ -1055,7 +1026,7 @@ class LvlOne:
 		self.start_time = time.time()
 		self.finish_time = None
 
-		self.spike_model = OBJModel("models/SpikeTrap.obj")
+		self.spike_model = OBJModel(asset_path("models", "SpikeTrap.obj"))
 
 	#Below is how you generate individual spikes
 		#self.spikes = [
@@ -1109,11 +1080,11 @@ class LvlOne:
 
 		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
 
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			if bpm is not None:
 				self.player.bpm = bpm
 
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			self.player.emotion = emotion #====
 
 		self.player.mouse()
@@ -1158,13 +1129,13 @@ class LvlOne:
 		fps = clock.get_fps()
 
 		mode_text = "None"
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
 
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			mode_text = "Facial Emotion"
 
-		training_text = "ON" if trainingMode else "OFF"
+		training_text = "ON" if gs.training_mode else "OFF"
 
 		draw_text("Level One", 20, 40) #Debugging purpose
 		draw_text(f"Mode: {mode_text}", 20, 80)
@@ -1177,8 +1148,9 @@ class LvlOne:
 			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
 
-		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
+		draw_webcam_pip()
 
+		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
 		end_2d()
 #=========================================================================================================
@@ -1230,11 +1202,11 @@ class LvlTwo:
 	def update(self, dt):
 		bpm, emotion = receiver.get_data() #this needs to be added to every update method for the levels
 
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			if bpm is not None:
 				self.player.bpm = bpm
 
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			self.player.emotion = emotion #====
 
 		self.player.mouse()
@@ -1278,23 +1250,25 @@ class LvlTwo:
 		fps = clock.get_fps()
 
 		mode_text = "None"
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			mode_text = "Facial Emotion"
 
-		training_text = "ON" if trainingMode else "OFF"
+		training_text = "ON" if gs.training_mode else "OFF"
 
 		draw_text("Level Two", 20, 40)
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
 
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
-#		draw_text(f"Emotion: {self.player.emotion}", 20, 140) 
+		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
 		draw_text(f"Time: {elapsed:.2f}s", 20, 160)
 		if self.finish_time is not None:
 			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 		draw_screen_effects(self.player)
+
+		draw_webcam_pip()
 
 		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
@@ -1309,7 +1283,7 @@ class LvlThree():
 		self.start_time = time.time()
 		self.finish_time = None
 
-		self.spike_model = OBJModel("models/SpikeTrap.obj")
+		self.spike_model = OBJModel(asset_path("models", "SpikeTrap.obj"))
 		self.spikes = [
 			SpikeTrap([0, -2, -70], [14, 2, 5]),
 			SpikeTrap([0, -2, -80], [14, 2, 5])
@@ -1376,10 +1350,10 @@ class LvlThree():
 	def update(self, dt):
 		bpm, emotion = receiver.get_data()
 
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			if bpm is not None:
 				self.player.bpm = bpm
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			self.player.emotion = emotion
 
 		self.player.mouse()
@@ -1545,489 +1519,29 @@ class LvlThree():
 		fps = clock.get_fps()
 
 		mode_text = "None"
-		if inputMode == InputMode.HEART_RATE:
+		if gs.input_mode == InputMode.HEART_RATE:
 			mode_text = "Heart Rate"
-		elif inputMode == InputMode.EMOTION:
+		elif gs.input_mode == InputMode.EMOTION:
 			mode_text = "Facial Emotion"
 
-		training_text = "ON" if trainingMode else "OFF"
+		training_text = "ON" if gs.training_mode else "OFF"
 
 		draw_text("Level Three (WIP)", 20, 40)
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
+		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
 		draw_text(f"Time: {elapsed:.2f}s", 20, 160)
 		if self.finish_time is not None:
 			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
-#		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
 		draw_screen_effects(self.player)
+
+		draw_webcam_pip()
 		
 		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
 		end_2d()
 
-#========================================================================================
-class MainMenu:
-	def __init__(self):
-		self.next_state = None
-		pygame.mouse.set_visible(True)
-		pygame.event.set_grab(False)
-
-		#Button Variables
-		self.button_width = 250
-		self.button_height = 60
-		self.button_spacing = 20
-
-		self.TITLE = FONT.render("Heart Beat Devil", True, WHITE)
-		self.TITLE_RECT = self.TITLE.get_rect(center=(SCREEN_WIDTH//2, 120))
-
-		start_y = 235
-		level_y = start_y + self.button_spacing + self.button_height #in order to get the button spacing and postion did this
-		quit_y = level_y + self.button_spacing + self.button_height   #to take our starting variable and then add the 
-							 #spacing variable to get the next y coordinate/postion
-		#start button
-		self.START_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.START_RECT.center = (SCREEN_WIDTH//2, start_y)
-		#level selection button
-		self.LEVEL_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LEVEL_RECT.center = (SCREEN_WIDTH//2, level_y)
-		#quit button
-		self.QUIT_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.QUIT_RECT.center = (SCREEN_WIDTH//2, quit_y)
-		
-		#pre rendering
-		self.START_TEXT = FONT.render("Start", True, WHITE)
-		self.START_TEXT_RECT = self.START_TEXT.get_rect(center = self.START_RECT.center)
-
-		self.LEVEL_TEXT = FONT.render("Level Selection" , True, WHITE)
-		self.LEVEL_TEXT_RECT = self.LEVEL_TEXT.get_rect(center = self.LEVEL_RECT.center)
-
-		self.QUIT_TEXT = FONT.render("Quit", True, WHITE)
-		self.QUIT_TEXT_RECT = self.QUIT_TEXT.get_rect(center = self.QUIT_RECT.center)
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-				mousePos = event.pos
-
-				if self.START_RECT.collidepoint(mousePos):
-					return "start"
-				elif self.LEVEL_RECT.collidepoint(mousePos):
-					return "lvlSelection"
-				elif self.QUIT_RECT.collidepoint(mousePos):
-					return "quit"
-
-
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		glClearColor(0, 0, 0, 1)
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-		begin_2d()
-		#draws the button boxes
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.START_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LEVEL_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
-
-		#draws our button text
-		draw_text("Start", self.START_RECT.centerx - 40, self.START_RECT.centery -15)
-		draw_text("Level Selection", self.LEVEL_RECT.centerx - 90, self.LEVEL_RECT.centery - 15)
-		draw_text("Quit", self.QUIT_RECT.centerx - 30, self.QUIT_RECT.centery - 15)
-
-		#draws title
-		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 100, 120)
-
-		end_2d()
-#================================================================
-class LvlComplete:
-	def __init__(self, level_name, finish_time, deaths, next_level):
-		self.level_name = level_name
-		self.finish_time = finish_time
-		self.deaths = deaths
-		self.next_level = next_level
-
-		self.next_state = None
-
-		pygame.mouse.set_visible(True)
-		pygame.event.set_grab(False)
-
-		self.player_name = "Player"
-
-		self.scores = get_top_scores(level_name)
-
-		self.button_width = 300
-		self.button_height = 60
-		self.spacing = 20
-
-		cx = SCREEN_WIDTH //2
-		start_y = SCREEN_HEIGHT //2
-
-		self.CONTINUE_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.CONTINUE_RECT.center = (cx, start_y)
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-
-			if event.type == pygame.MOUSEBUTTONDOWN:
-				if self.CONTINUE_RECT.collidepoint(event.pos):
-					self.next_state = self.next_level
-
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		begin_2d()
-
-		glColor4f(0, 0, 0, 0.7)
-		glBegin(GL_QUADS)
-		glVertex2f(0, 0)
-		glVertex2f(SCREEN_WIDTH, 0)
-		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
-		glVertex2f(0, SCREEN_HEIGHT)
-		glEnd()
-
-		draw_text(f"{self.level_name} Level Complete!", SCREEN_WIDTH//2 - 180, 100)
-		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 140, 180)
-		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 140, 220)
-		draw_text("Leaderboard", SCREEN_WIDTH//2 -100, 320)
-
-		y = 320
-
-		for i, score in enumerate(self.scores):
-
-			line = (
-				f"{i+1}. "
-				f"{score['player']} "
-				f"{score['time']:.2f}s "
-				f"Deaths:{score['deaths']}"
-			)
-
-			draw_text(line, SCREEN_WIDTH//2 - 250, y)
-
-			y += 50
-
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.CONTINUE_RECT)
-
-		draw_text("Continue", self.CONTINUE_RECT.centerx - 70, self.CONTINUE_RECT.centery - 15)
-
-
-		end_2d()
-
-#================================================================
-class PauseMenu:
-	def __init__(self, previous_state):
-		self.previous_state = previous_state
-
-		self.button_width = 300
-		self.button_height = 60
-		self.spacing = 20
-
-		cx = SCREEN_WIDTH //2
-		start_y = SCREEN_HEIGHT //2
-
-		self.RESUME_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.RESUME_RECT.center = (cx, start_y)
-
-		self.MENU_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MENU_RECT.center = (cx, start_y + self.button_height + self.spacing)
-
-		self.QUIT_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.QUIT_RECT.center = (cx, start_y + 2*(self.button_height + self.spacing))
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-				return self.previous_state
-
-			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-				if self.RESUME_RECT.collidepoint(event.pos):
-					return self.previous_state
-
-				if self.MENU_RECT.collidepoint(event.pos):
-					return MainMenu()
-
-				if self.QUIT_RECT.collidepoint(event.pos):
-					return "quit"
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		self.previous_state.draw()
-
-		begin_2d()
-
-		glColor4f(0, 0, 0, 0.7)
-		glBegin(GL_QUADS)
-		glVertex2f(0, 0)
-		glVertex2f(SCREEN_WIDTH, 0)
-		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
-		glVertex2f(0, SCREEN_HEIGHT)
-		glEnd()
-
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.RESUME_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.MENU_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
-
-		draw_text("Resume Game", self.RESUME_RECT.centerx - 100, self.RESUME_RECT.centery - 15)
-		draw_text("Main Menu", self.MENU_RECT.centerx - 80, self.MENU_RECT.centery - 15)
-		draw_text("Quit Game", self.QUIT_RECT.centerx - 72, self.QUIT_RECT.centery - 15)
-
-		draw_text("Paused", SCREEN_WIDTH//2 - 60, SCREEN_HEIGHT//2 - 140)
-
-		end_2d()
-
-#===================================================================================
-class NameEntryScreen:
-	def __init__(self, level_name, finish_time, deaths, next_level):
-		self.level_name = level_name
-		self.finish_time = finish_time
-		self.deaths = deaths
-		self.next_level = next_level
-		self.next_state = None
-		self.player_name = ""
-
-		pygame.mouse.set_visible(True)
-		pygame.event.set_grab(False)
-
-		self.SUBMIT_RECT = pygame.Rect(SCREEN_WIDTH//2 - 150, 550, 300, 60)
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-
-			if event.type == pygame.KEYDOWN:
-				if event.key == pygame.K_BACKSPACE:
-					self.player_name = self.player_name[:-1]
-				elif event.key == pygame.K_RETURN:
-					if len(self.player_name.strip()) > 0:
-						return self.submit_player_score()
-
-				else:
-					if len(self.player_name) < 16:
-						if event.unicode.isprintable():
-							self.player_name += event.unicode
-
-			if event.type == pygame.MOUSEBUTTONDOWN:
-				if self.SUBMIT_RECT.collidepoint(event.pos):
-					if len(self.player_name.strip()) > 0:
-						return self.submit_player_score()
-
-	def submit_player_score(self):
-		submit_score(
-			self.level_name,
-			self.player_name,
-			self.finish_time,
-			self.deaths
-		)
-
-		return LeaderboardScreen(self.level_name, self.next_level)
-
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		glClearColor(0, 0, 0, 1)
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-		begin_2d()
-
-		draw_text("Level comlpete!", SCREEN_WIDTH//2 - 100, 100)
-		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 80, 200)
-		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 80, 250)
-		draw_text("Enter Your Name", SCREEN_WIDTH//2 - 100, 350)
-
-		pygame.draw.rect(SCREEN, (60,60,60), (SCREEN_WIDTH//2 - 200, 400, 400, 70))
-
-		draw_text(self.player_name, SCREEN_WIDTH//2 - 80, 440)
-
-		pygame.draw.rect(SCREEN, (200, 200, 200), self.SUBMIT_RECT)
-
-		draw_text("Submit Score", self.SUBMIT_RECT.centerx - 95, self.SUBMIT_RECT.centery - 16)
-
-		end_2d()
-#========================================================
-class LeaderboardScreen:
-	def __init__(self, level_name, next_level):
-		self.level_name = level_name
-		self.next_level = next_level
-		self.next_state = None
-
-		pygame.mouse.set_visible(True)
-		pygame.event.set_grab(False)
-
-		self.scores = get_top_scores(level_name)
-
-		self.CONTINUE_RECT = pygame.Rect(SCREEN_WIDTH//2 -150, 850, 300, 60)
-
-	def handleEvents(self, events):
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-
-			if event.type == pygame.MOUSEBUTTONDOWN:
-				if self.CONTINUE_RECT.collidepoint(event.pos):
-					return self.next_level
-
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		glClearColor(0, 0, 0, 1)
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-		begin_2d()
-
-		draw_text(f"{self.level_name} Leaderboard", SCREEN_WIDTH//2 - 110, 100)
-		y = 220
-
-		for i, score in enumerate(self.scores):
-
-			line = (
-				f"{i+1}. "
-				f"{score['player']} "
-				f"{score['time']:.2f}s "
-				f"Deaths:{score['deaths']}"
-			)
-
-			draw_text(line, SCREEN_WIDTH//2 - 130, y)
-			y += 60
-
-		pygame.draw.rect(SCREEN, (200, 200, 200), self.CONTINUE_RECT)
-		draw_text("Continue", self.CONTINUE_RECT.centerx - 60, self.CONTINUE_RECT.centery - 30)
-
-		end_2d()
-#=========================================================
-class ModeSelection:
-	def __init__(self):
-		pygame.mouse.set_visible(True)
-		pygame.event.set_grab(False)
-
-		self.training_mode = False
-		self.next_state = None
-		self.target_level = "level1"
-
-		#Button Variable for selections
-		self.button_width = 350
-		self.button_height = 120
-		self.button_spacing = 20
-
-		cx = SCREEN_WIDTH//2
-
-		start_y = 280
-		mode2_y = start_y + self.button_height + self.button_spacing
-		train_y = mode2_y + self.button_height + self.button_spacing
-
-		self.MODE1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE1_RECT.center = (cx, start_y)
-
-		self.MODE2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE2_RECT.center = (cx, mode2_y)
-
-		self.TRAIN_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.TRAIN_RECT.center = (cx, train_y)
-
-		self.TITLE = FONT.render("Heart Beat Devil", True, WHITE)
-		self.TITLE_RECT = self.TITLE.get_rect(center=(cx, 80))
-
-		self.SUBTITLE = FONT.render("Select input mode", True, (255, 0, 255))
-		self.SUBTITLE_RET = self.SUBTITLE.get_rect(center=(cx, 180))
-
-		self.MODE1_TEXT = FONT.render("1. Heart Rate (BPM)", True, WHITE)
-		self.MODE1_TEXT_RECT = self.MODE1_TEXT.get_rect(center = self.MODE1_RECT.center)
-
-		self.MODE2_TEXT = FONT.render("2. Facial Emotion", True, WHITE)
-		self.MODE2_TEXT_RECT = self.MODE2_TEXT.get_rect(center = self.MODE2_RECT.center)
-
-	def handleEvents(self, events):
-		global inputMode, trainingMode
-
-		for event in events:
-			if event.type == pygame.QUIT:
-				return "quit"
-
-			if event.type == pygame.KEYDOWN:
-				if event.key == pygame.K_1:
-					inputMode = InputMode.HEART_RATE
-					trainingMode = self.training_mode
-					return self.target_level
-
-				if event.key == pygame.K_2:
-					inputMode = InputMode.EMOTION
-					trainingMode = self.training_mode
-					return self.target_level
-
-				if event.key == pygame.K_t:
-					self.training_mode = not self.training_mode
-
-			if event.type == pygame.MOUSEBUTTONDOWN and event.button ==  1:
-				mousePos = event.pos
-
-				if self.MODE1_RECT.collidepoint(mousePos):
-					inputMode = InputMode.HEART_RATE
-					trainingMode = self.training_mode
-					return self.target_level
-
-				elif self.MODE2_RECT.collidepoint(mousePos):
-					inputMode = InputMode.EMOTION
-					trainingMode = self.training_mode
-					return self.target_level
-				elif self.TRAIN_RECT.collidepoint(mousePos):
-					self.training_mode = not self.training_mode
-
-		
-	def update(self, dt):
-		pass
-
-	def draw(self):
-		glClearColor(0, 0, 0, 1)
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-		begin_2d()
-
-		mousePos = pygame.mouse.get_pos()
-
-		#Hover coloring
-		color1 = (150, 220, 150)
-		color2 = (150, 150, 220)
-
-		if self.MODE1_RECT.collidepoint(mousePos):
-			color1 = (230, 255, 230)
-
-		if self.MODE2_RECT.collidepoint(mousePos):
-			color2 = (230, 230, 255)
-
-		#Draws the buttons
-		pygame.draw.rect(SCREEN, (30, 40, 30), self.MODE1_RECT)
-		pygame.draw.rect(SCREEN, color1, self.MODE1_RECT, 2)
-
-		pygame.draw.rect(SCREEN, (30, 30, 40), self.MODE2_RECT)
-		pygame.draw.rect(SCREEN, color2, self.MODE2_RECT, 2)
-
-		#training toggle colors
-		col_tr = (100, 255, 100) if self.training_mode else (100, 100, 100)
-		bg_tr = (20, 50, 20) if self.training_mode else (30, 30, 30)
-
-		pygame.draw.rect(SCREEN, bg_tr, self.TRAIN_RECT)
-		pygame.draw.rect(SCREEN, col_tr, self.TRAIN_RECT, 2)
-
-		#Draws the text
-		draw_text("1. Heart Rate (BPM)", self.MODE1_RECT.centerx - 120, self.MODE1_RECT.centery - 15)
-		draw_text("2. Facial Emotion", self.MODE2_RECT.centerx - 120, self.MODE2_RECT.centery - 15)
-
-		status = "ON" if self.training_mode else "OFF"
-		draw_text(f"Training Mode: {status}", self.TRAIN_RECT.centerx - 130, self.TRAIN_RECT.centery - 10)
-
-		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 120, 80)
-		draw_text("Select Input Mode", SCREEN_WIDTH//2 - 110, 180)
-
-		end_2d()
 #=============================================================================================================
 def resolve_state(name):
 	if name == "level1":
@@ -2083,7 +1597,7 @@ def apply_state_change(currentState, new_state):
 
 def main_menu():
 	game_start = time.time()
-	currentState = MainMenu() #calls the class and sets it to currentState
+	currentState = TitleScreen()
 
 	if hasattr(currentState, "on_enter"):
 		currentState.on_enter()
