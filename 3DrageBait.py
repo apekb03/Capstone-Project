@@ -53,7 +53,7 @@ class InputMode(Enum):
 #OpenGL Matrixs and setups----
 glMatrixMode(GL_PROJECTION)
 glLoadIdentity()
-gluPerspective(90, (SCREEN_WIDTH / SCREEN_HEIGHT), 0.1, 100.0)
+gluPerspective(90, (SCREEN_WIDTH / SCREEN_HEIGHT), 0.1, 1000.0)
 glMatrixMode(GL_MODELVIEW)
 glEnable(GL_DEPTH_TEST)
 glEnable(GL_BLEND)
@@ -516,9 +516,13 @@ class Player:
 		self.spawn_pos = list(spawn_pos)
 		self.pos = list(spawn_pos)
 		self.deaths = 0
+
+		self.vel_x = 0
 		self.vel_y = 0
-		self.speed = 6
-		self.sprintSpeed = 12
+		self.vel_z = 0
+
+		self.speed = 40
+		self.sprintSpeed = 80
 		self.gravity = -13
 		self.jump = False
 
@@ -532,6 +536,10 @@ class Player:
 		self.shake_intensity = 0
 		self.shake_timer = 0
 		self.dim_intensity = 0
+
+		self.grappling = False
+		self.grapple_point = None
+		self.grapple_speed = 25
 
 	def mouse(self):
 		dx, dy = pygame.mouse.get_rel()
@@ -562,28 +570,108 @@ class Player:
 		current_speed = sprintSpeed if keys[K_LSHIFT] else speed
 
 		if keys[K_w]:
-			self.pos[0] += flat[0]*current_speed
-			self.pos[2] += flat[2]*current_speed
+			self.vel_x += flat[0]*current_speed
+			self.vel_z += flat[2]*current_speed
 
 		if keys[K_s]:
-			self.pos[0] -= flat[0]*current_speed
-			self.pos[2] -= flat[2]*current_speed
+			self.vel_x -= flat[0]*current_speed
+			self.vel_z -= flat[2]*current_speed
 
 		if keys[K_d]:
-			self.pos[0] -= right[0]*current_speed
-			self.pos[2] -= right[2]*current_speed
+			self.vel_x -= right[0]*current_speed
+			self.vel_z -= right[2]*current_speed
 
 		if keys[K_a]:
-			self.pos[0] += right[0]*current_speed
-			self.pos[2] += right[2]*current_speed
+			self.vel_x += right[0]*current_speed
+			self.vel_z += right[2]*current_speed
 
 		if keys[K_SPACE] and not self.jump:
 			self.vel_y = 10
 			self.jump = True
 
 	def gravity_apply(self, dt):
+
 		self.vel_y += self.gravity*dt
+
+		self.pos[0] += self.vel_x*dt
 		self.pos[1] += self.vel_y*dt
+		self.pos[2] += self.vel_z*dt
+
+		#creates friction
+		self.vel_x *= 0.90
+		self.vel_z *= 0.90
+
+	def start_grapple(self, point):
+		self.grappling = True
+		self.grapple_point = point
+
+	def stop_grapple(self):
+		self.grappling = False
+		self.grapple_point = None
+
+	def update_grapple(self, dt):
+		if not self.grappling:
+			return
+
+		gx, gy, gz = self.grapple_point
+		px, py, pz = self.camera_pos()
+
+		dx = gx - px
+		dy = gy - py
+		dz = gz - pz
+
+		dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+		if dist < 1:
+			return
+
+		dx /= dist
+		dy /= dist
+		dz /= dist
+
+		pull_strength = 40 #the pull strength of the rope
+
+		self.vel_x += dx * pull_strength * dt
+		self.vel_y += dy * pull_strength * dt
+		self.vel_z += dz * pull_strength * dt
+
+		rope_length = 25 #the distance you can grab onto the grapple point
+
+		if dist > rope_length:
+			correction = dist - rope_length
+
+			self.pos[0] += dx * correction
+			self.pos[1] += dy * correction
+			self.pos[2] += dz * correction
+
+	def try_grapple(self, grapple_points):
+		px, py, pz = self.camera_pos()
+		fx, fy, fz = self.front()
+
+		best_point = None
+		best_dot = 0.96
+
+		for point in grapple_points:
+			dx = point[0] - px
+			dy = point[1] - py
+			dz = point[2] - pz
+
+			dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+			if dist > 40:
+				continue
+
+			dx /= dist
+			dy /= dist
+			dz /= dist
+
+			dot = dx*fx + dy*fy + dz*fz
+			if dot > best_dot:
+				best_dot = dot
+				best_point = point
+
+		if best_point:
+			self.start_grapple(best_point)
 
 	def camera(self):
 		x, y, z = self.pos[0], self.pos[1] +1.5, self.pos[2]
@@ -599,9 +687,14 @@ class Player:
 
 		gluLookAt(x + shake_x, y + shake_y, z, x+f[0], y+f[1], z+f[2], 0, 1, 0)
 
+	def camera_pos(self):
+		return (self.pos[0], self.pos[1] + 1.5, self.pos[2])
+
+#THIS CHANGES THE THRESHOLD OF WHEN EFFECTS START
 	def get_intensity(self):
-		threshold = 90
-		max_bpm = 160
+		threshold = 90 
+#		threshold = 60
+		max_bpm = 180
 
 		if self.bpm <= threshold:
 			return 0
@@ -732,7 +825,72 @@ class MovingPlatform:
 
 	def draw(self):
 		draw_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 0.5, 1))
-#========================================================================
+#===================================================================
+class Enemy:
+	def __init__(self, pos, speed=3):
+
+		self.spawn_pos = list(pos)
+		self.pos = list(pos)
+
+		self.speed = speed
+		self.size = 1.2
+
+		self.color = (0.8, 0.1, 0.1)
+
+		self.aggro_distance = 60
+		self.attack_distance = 1.5
+		self.yaw = 0
+
+	def update(self, player, dt):
+		bpm_factor = player.get_bpm_factor()
+		actual_speed = self.speed * bpm_factor
+
+		px, py, pz = player.camera_pos()
+		ex, ey, ez = self.pos
+
+		dx = px - ex
+		dy = py - ey
+		dz = pz - ez
+
+		dist = math.sqrt(dx*dx + dz*dz)
+
+		if dist < self.aggro_distance and dist > 0.01:
+			self.yaw = math.degrees(math.atan2(-dz, dx))
+
+			dx /= dist
+			dy /= dist
+			dz /= dist
+
+			self.pos[0] += dx * actual_speed * dt
+			self.pos[1] += dy * actual_speed * dt
+			self.pos[2] += dz * actual_speed * dt
+
+	def check_collision(self, player):
+		px, py, pz = player.camera_pos()
+		ex, ey, ez = self.pos
+
+		dx = px - ex
+		dy = py - ey
+		dz = pz - ez
+
+		dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+		return dist < (self.size * 1.5)
+
+	def reset(self):
+		self.pos = list(self.spawn_pos)
+		self.yaw = 0
+
+
+	def draw(self):
+		glPushMatrix()
+		glTranslatef(*self.pos)
+		glRotatef(self.yaw, 0, 1, 0)
+		glScalef(self.size, self.size, self.size)
+		draw_cube(self.color)
+		glPopMatrix()
+
+#===================================================================
 class LevelSelection:
 	def __init__(self):
 		self.button_width = 250
@@ -1147,16 +1305,53 @@ class LvlThree():
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		self.player = Player()
+
+		self.start_time = time.time()
+		self.finish_time = None
+
+		self.spike_model = OBJModel("models/SpikeTrap.obj")
+		self.spikes = [
+			SpikeTrap([0, -2, -70], [14, 2, 5]),
+			SpikeTrap([0, -2, -80], [14, 2, 5])
+#			SpikeTrap([0, -2, -90], [14, 2, 5])
+		]
+
+
 		self.level = Lvl(
 			grounds=[
-			[0, -3, 20, 2, 1, 15]
+			[0, -3, 25, 3, 1, 15],
+			[0, -3, -75, 5, 1, 10],
+			[0, -3, -300, 3, 1, 15]
 		],
 			platforms=[
-			[-6, 2, -10],
-			[0, 5, -20],
-			[6, 3, -30]
+			[-5, 0.5, 0],
+			[5, 3, -18],
+			[0, 3, -40]
 		]
 	)
+
+		self.enemies = [
+			Enemy([20, 2, -25], speed = 10),
+			Enemy([-20, 2, -40], speed = 10),
+			Enemy([20, 2, -60], speed = 10),
+			Enemy([-20, 2, -70], speed = 10),
+			Enemy([-20, 10, -200], speed = 10),
+			Enemy([20, 10, -210], speed = 10)
+		]
+		#make sure to add grapple points to other level that will use them
+		self.grapple_points = [
+			(-2, 15, -55),
+			(2, 15, -90),
+			(4, 15, -170),
+			(-2, 15, -240)
+		]
+
+		self.level.moving_platforms = [
+			MovingPlatform([4, 3, -105], [2, 0.5, 2], axis="x", range=5, speed=2),
+			MovingPlatform([-4, 3, -125], [2, 0.5, 2], axis="x", range=5, speed=2)
+		]
+
+		self.door = Door([0, 0, -310], [1, 2, 1], "level4")
 
 	def handleEvents(self, events):
 		for event in events:
@@ -1164,6 +1359,14 @@ class LvlThree():
 				pygame.mouse.set_visible(True)
 				pygame.event.set_grab(False)
 				return PauseMenu(self)
+			#to add the grapple to other lvls need this and to draw them and to add it to update
+			if event.type == pygame.MOUSEBUTTONDOWN:
+				if event.button == 3: #Mouse button are 1=LClick, 2=MClick, 3=RClick
+					self.player.try_grapple(self.grapple_points)
+
+			if event.type == pygame.MOUSEBUTTONUP:
+				if event.button == 3:
+					self.player.stop_grapple()
 	def on_enter(self):
 		self.next_state = None
 		pygame.mouse.set_visible(False)
@@ -1182,27 +1385,164 @@ class LvlThree():
 		self.player.mouse()
 
 		keys = pygame.key.get_pressed()
+
 		self.player.move(keys, dt)
 		self.player.gravity_apply(dt)
+		self.player.update_grapple(dt)
+
 		self.player.update_effects(dt)
 
-		self.level.collide(self.player)
+		for enemy in self.enemies: #enemy collision against the player
+			enemy.update(self.player, dt)
+			if enemy.check_collision(self.player):
+				self.player.respawn()
+
+				for e in self.enemies:
+					e.reset()
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
-#		if self.door.check_collision(self.player):
-#			self.next_state = self.door.targetLevel
+
+			for enemy in self.enemies:
+				enemy.reset()
+		if self.door.check_collision(self.player):
+			self.finish_time = time.time() - self.start_time
+			
+			self.next_state = NameEntryScreen("Level 3", self.finish_time,
+			self.player.deaths, self.door.targetLevel)
+
+		for spike in self.spikes:
+			if spike.check_collision(self.player):
+				self.player.respawn()
+
+		bpm_factor = self.player.get_bpm_factor()
+
+		for plat in self.level.moving_platforms:
+			plat.update_bpm(bpm_factor)
+			plat.update(dt)
+
+		self.level.collide(self.player)
+
+	def draw_rope(self):
+		if not (self.player.grappling and self.player.grapple_point):
+			return
+
+		px, py, pz = self.player.camera_pos()
+		gx, gy, gz = self.player.grapple_point
+
+		# direction vector
+		dx = gx - px
+		dy = gy - py
+		dz = gz - pz
+
+		length = math.sqrt(dx*dx + dy*dy + dz*dz)
+		if length < 0.001:
+			return
+
+		dx /= length
+		dy /= length
+		dz /= length
+
+		# pick an up vector (avoid parallel issues)
+		upx, upy, upz = 0, 1, 0
+
+		# perpendicular vectors (rope basis)
+		rx = dy * upz - dz * upy
+		ry = dz * upx - dx * upz
+		rz = dx * upy - dy * upx
+
+		rlen = math.sqrt(rx*rx + ry*ry + rz*rz)
+		if rlen < 0.0001:
+			upx, upy, upz = 1, 0, 0
+			rx = dy * upz - dz * upy
+			ry = dz * upx - dx * upz
+			rz = dx * upy - dy * upx
+			rlen = math.sqrt(rx*rx + ry*ry + rz*rz)
+
+		rx /= rlen
+		ry /= rlen
+		rz /= rlen
+
+		# second perpendicular
+		sx = dy * rz - dz * ry
+		sy = dz * rx - dx * rz
+		sz = dx * ry - dy * rx
+
+		slen = math.sqrt(sx*sx + sy*sy + sz*sz)
+		sx /= slen
+		sy /= slen
+		sz /= slen
+	
+		# rope thickness (increase here)
+		thickness = 0.010
+
+		segments = 10  # smoothness
+
+		glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT)
+		glDisable(GL_DEPTH_TEST)
+		glDisable(GL_CULL_FACE)
+
+		glColor3f(1, 0, 0)
+
+		glBegin(GL_QUADS)
+
+		for i in range(segments):
+			a0 = (i / segments) * 2 * math.pi
+			a1 = ((i + 1) / segments) * 2 * math.pi
+
+			c0 = math.cos(a0) * thickness
+			s0 = math.sin(a0) * thickness
+			c1 = math.cos(a1) * thickness
+			s1 = math.sin(a1) * thickness
+
+			# ring offset directions
+			ox0 = rx * c0 + sx * s0
+			oy0 = ry * c0 + sy * s0
+			oz0 = rz * c0 + sz * s0
+
+			ox1 = rx * c1 + sx * s1
+			oy1 = ry * c1 + sy * s1
+			oz1 = rz * c1 + sz * s1
+
+			# segment quad
+			glVertex3f(px + ox0, py + oy0, pz + oz0)
+			glVertex3f(px + ox1, py + oy1, pz + oz1)
+			glVertex3f(gx + ox1, gy + oy1, gz + oz1)
+			glVertex3f(gx + ox0, gy + oy0, gz + oz0)
+	
+		glEnd()
+
+		glPopAttrib()
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
 		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+
+		glMatrixMode(GL_MODELVIEW)
 		glLoadIdentity()
 
 		self.player.camera()
 		self.level.draw()
-#		self.door.draw()
+		
+
+		for enemy in self.enemies:
+			enemy.draw()
+
+		for spike in self.spikes:
+			spike.draw(self.spike_model)
+
+		for point in self.grapple_points:
+			draw_object(point, 0.3, 0.3, 0.3, (1, 1, 0))
+		self.door.draw()
+		self.draw_rope()
+
+		for plat in self.level.moving_platforms:
+			plat.draw()
 
 		begin_2d()
+
+		elapsed = time.time() - self.start_time
+		fps = clock.get_fps()
 
 		mode_text = "None"
 		if inputMode == InputMode.HEART_RATE:
@@ -1216,8 +1556,13 @@ class LvlThree():
 		draw_text(f"Mode: {mode_text}", 20, 80)
 		draw_text(f"Training: {training_text}", 20, 100)
 		draw_text(f"BPM: {self.player.bpm}", 20, 120)
+		draw_text(f"Time: {elapsed:.2f}s", 20, 160)
+		if self.finish_time is not None:
+			draw_text(f"Completed In: {self.finish_time:.2f}s", 20, 200)
 #		draw_text(f"Emotion: {self.player.emotion}", 20, 140)
 		draw_screen_effects(self.player)
+		
+		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
 		end_2d()
 
@@ -1502,7 +1847,7 @@ class NameEntryScreen:
 
 		draw_text(self.player_name, SCREEN_WIDTH//2 - 80, 440)
 
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.SUBMIT_RECT)
+		pygame.draw.rect(SCREEN, (200, 200, 200), self.SUBMIT_RECT)
 
 		draw_text("Submit Score", self.SUBMIT_RECT.centerx - 95, self.SUBMIT_RECT.centery - 16)
 
@@ -1554,7 +1899,7 @@ class LeaderboardScreen:
 			draw_text(line, SCREEN_WIDTH//2 - 130, y)
 			y += 60
 
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.CONTINUE_RECT)
+		pygame.draw.rect(SCREEN, (200, 200, 200), self.CONTINUE_RECT)
 		draw_text("Continue", self.CONTINUE_RECT.centerx - 60, self.CONTINUE_RECT.centery - 30)
 
 		end_2d()
