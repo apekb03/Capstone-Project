@@ -33,16 +33,16 @@ pygame.font.init()
 
 import config
 import facial_emotion
-import firebase_service  # noqa: F401
+import firebase_service as fb
 import game_state as gs
 from game_types import InputMode
 
 import ui_draw as ui
 from menu_screens import (
+	LeaderboardScreen,
 	LevelSelection,
 	MainMenu,
 	ModeSelection,
-	NameEntryScreen,
 	PauseMenu,
 	TitleScreen,
 )
@@ -51,6 +51,7 @@ PULSOID_TOKEN = os.environ.get("PULSOID_TOKEN")
 
 SCREEN = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), DOUBLEBUF | OPENGL)
 ui.set_screen(SCREEN)
+ui.sync_frame_dimensions()
 
 SCREEN_WIDTH = config.SCREEN_WIDTH
 SCREEN_HEIGHT = config.SCREEN_HEIGHT
@@ -76,7 +77,7 @@ UI_BTN_HOVER = ui.UI_BTN_HOVER
 UI_BTN_BORDER = ui.UI_BTN_BORDER
 UI_MUTED_TEXT = ui.UI_MUTED_TEXT
 
-glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+glViewport(0, 0, ui.frame_w(), ui.frame_h())
 pygame.display.set_caption("Heart Beat Devil")
 
 #OpenGL Matrixs and setups----
@@ -90,6 +91,27 @@ glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 glClearColor(0, 0, 0, 1)
 
 clock = pygame.time.Clock()
+
+
+def _leaderboard_name_for_autosubmit():
+	u = gs.current_user or {}
+	name = (u.get("display_name") or "").strip()
+	return name if name else "Player"
+
+
+def _complete_level_to_leaderboard(level_name, finish_time, deaths, next_level):
+	player = _leaderboard_name_for_autosubmit()
+	ok, err = fb.submit_score(level_name, player, finish_time, deaths, source="game")
+	last_run = {
+		"player": player,
+		"time": float(finish_time),
+		"deaths": int(deaths),
+		"saved": ok,
+	}
+	return LeaderboardScreen(
+		level_name, next_level, upload_ok=ok, upload_err=err, last_run=last_run
+	)
+
 
 def draw_screen_effects(player):
 	intensity = player.get_intensity()
@@ -131,6 +153,18 @@ def draw_screen_effects(player):
 		glVertex2f(SCREEN_WIDTH - margin_x, SCREEN_HEIGHT - margin_y)
 		glVertex2f(margin_x, SCREEN_HEIGHT - margin_y)
 		glEnd()
+
+
+def draw_gameplay_jump_hint():
+	"""Small footer hint; uses frame size so it stays correct after resize."""
+	draw_text_centered(
+		"Hold Shift when you jump for extra height",
+		ui.frame_w() // 2,
+		ui.frame_h() - 36,
+		font=FONT_SUB,
+		color=UI_MUTED_TEXT,
+	)
+
 
 #Platform arguments  [x, y, z] X controls the - = left and + = right, Y is ground.
 #z controls forward and backward  with + = forward and - = backward
@@ -585,7 +619,8 @@ class Player:
 			sprintSpeed *= ease
 			speed *= ease
 
-		current_speed = sprintSpeed if keys[K_LSHIFT] else speed
+		sprinting = keys[K_LSHIFT] or keys[K_RSHIFT]
+		current_speed = sprintSpeed if sprinting else speed
 
 		if keys[K_w]:
 			self.vel_x += flat[0]*current_speed
@@ -604,7 +639,7 @@ class Player:
 			self.vel_z += right[2]*current_speed
 
 		if keys[K_SPACE] and not self.jump:
-			self.vel_y = 10
+			self.vel_y = 15 if sprinting else 10
 			self.jump = True
 
 	def gravity_apply(self, dt):
@@ -767,18 +802,19 @@ class Door:
 		draw_object(self.pos, self.size[0], self.size[1], self.size[2], (0, 0, 1))
 
 	def check_collision(self, player):
-		px, py, pz = player.pos
+		# Use camera / upper body position — feet-only (player.pos) often sat just outside
+		# the door's strict Y slab while the player clearly crossed the finish volume.
+		px, py, pz = player.camera_pos()
 		dx, dy, dz = self.pos
 		sx, sy, sz = self.size
 
-		player_half = 1
-
+		margin = 0.4
 		in_xz = (
-			abs(px - dx) < (sx * 0.5 + player_half) and
-			abs(pz - dz) < (sz * 0.5 + player_half)
+			abs(px - dx) < (sx * 0.5 + margin) and
+			abs(pz - dz) < (sz * 0.5 + margin)
 		)
 
-		in_y = abs(py - dy) < (sy * 0.5)
+		in_y = abs(py - dy) < (sy * 0.5 + margin)
 
 		return in_xz and in_y
 
@@ -1093,15 +1129,17 @@ class LvlOne:
 		self.player.move(keys, dt)
 		self.player.gravity_apply(dt)
 		self.player.update_effects(dt)
+
+		if self.door.check_collision(self.player) and self.finish_time is None:
+			self.finish_time = time.time() - self.start_time
+			self.next_state = _complete_level_to_leaderboard(
+				"Level 1", self.finish_time, self.player.deaths, self.door.targetLevel
+			)
+
 		self.level.collide(self.player)
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
-
-		if self.door.check_collision(self.player): #This line checks for the collision between player and door object
-			self.finish_time = time.time() - self.start_time
-
-			self.next_state = NameEntryScreen("Level 1", self.finish_time, self.player.deaths, self.door.targetLevel)
 
 
 
@@ -1149,6 +1187,7 @@ class LvlOne:
 		draw_screen_effects(self.player)
 
 		draw_webcam_pip()
+		draw_gameplay_jump_hint()
 
 		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
@@ -1222,15 +1261,16 @@ class LvlTwo:
 			plat.update_bpm(bpm_factor)
 			plat.update(dt)
 
+		if self.door.check_collision(self.player) and self.finish_time is None:
+			self.finish_time = time.time() - self.start_time
+			self.next_state = _complete_level_to_leaderboard(
+				"Level 2", self.finish_time, self.player.deaths, self.door.targetLevel
+			)
+
 		self.level.collide(self.player)
 
 		if self.player.pos[1] < self.level.DEATH_Y:
 			self.player.respawn()
-
-		if self.door.check_collision(self.player):
-			self.finish_time = time.time() - self.start_time
-
-			self.next_state = NameEntryScreen("Level 2", self.finish_time, self.player.deaths, self.door.targetLevel)
 
 	def draw(self):
 		glClearColor(0.5, 0.7, 1.0, 1)
@@ -1269,6 +1309,7 @@ class LvlTwo:
 		draw_screen_effects(self.player)
 
 		draw_webcam_pip()
+		draw_gameplay_jump_hint()
 
 		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
@@ -1343,6 +1384,8 @@ class LvlThree():
 					self.player.stop_grapple()
 	def on_enter(self):
 		self.next_state = None
+		self.start_time = time.time()
+		self.finish_time = None
 		pygame.mouse.set_visible(False)
 		pygame.event.set_grab(True)
 		pygame.mouse.get_rel()
@@ -1379,11 +1422,6 @@ class LvlThree():
 
 			for enemy in self.enemies:
 				enemy.reset()
-		if self.door.check_collision(self.player):
-			self.finish_time = time.time() - self.start_time
-			
-			self.next_state = NameEntryScreen("Level 3", self.finish_time,
-			self.player.deaths, self.door.targetLevel)
 
 		for spike in self.spikes:
 			if spike.check_collision(self.player):
@@ -1394,6 +1432,12 @@ class LvlThree():
 		for plat in self.level.moving_platforms:
 			plat.update_bpm(bpm_factor)
 			plat.update(dt)
+
+		if self.door.check_collision(self.player) and self.finish_time is None:
+			self.finish_time = time.time() - self.start_time
+			self.next_state = _complete_level_to_leaderboard(
+				"Level 3", self.finish_time, self.player.deaths, self.door.targetLevel
+			)
 
 		self.level.collide(self.player)
 
@@ -1537,7 +1581,8 @@ class LvlThree():
 		draw_screen_effects(self.player)
 
 		draw_webcam_pip()
-		
+		draw_gameplay_jump_hint()
+
 		draw_text(f"FPS: {int(fps)}", SCREEN_WIDTH - 120, 20)
 
 		end_2d()
@@ -1615,6 +1660,8 @@ def main_menu():
 			if event.type == pygame.QUIT:
 				pygame.quit()
 				return
+			if event.type == pygame.VIDEORESIZE:
+				ui.sync_frame_dimensions()
 
 		if hasattr(currentState, "handleEvents"):
 			result = currentState.handleEvents(events)

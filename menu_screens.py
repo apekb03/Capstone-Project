@@ -1,6 +1,5 @@
 """Menu and overlay UI screens (title, main menu, auth, mode selection, etc.)."""
 
-import math
 import traceback
 
 import pygame
@@ -13,21 +12,23 @@ import game_types
 import ui_draw as ui
 
 InputMode = game_types.InputMode
-W, H = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
 
 
 class MainMenu:
 	def __init__(self):
+		ui.sync_frame_dimensions()
 		self.next_state = None
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
+		self._bg = ui.MenuBackdropRed(70)
 		self.button_width = 460
 		self.button_height = 52
 		self.button_spacing = 14
+		self._ht = [0.0, 0.0, 0.0, 0.0]
+		self._acc_ht = 0.0
 
 		self.CARD = pygame.Rect(0, 0, 780, 700)
-		self.CARD.center = (W // 2, H // 2)
+		self.CARD.center = (ui.frame_w() // 2, ui.frame_h() // 2)
 
 		cx = self.CARD.centerx
 		y0 = self.CARD.y + 184
@@ -61,45 +62,56 @@ class MainMenu:
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		rects = [self.START_RECT, self.LEADER_RECT, self.LEVEL_RECT, self.QUIT_RECT]
+		for i, r in enumerate(rects):
+			t = 1.0 if r.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
+		at = 1.0 if self.ACCOUNT_RECT.collidepoint(mp) else 0.0
+		self._acc_ht += (at - self._acc_ht) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		cx = ui.frame_w() // 2
+		ui.draw_red_main_title(cx, 120)
+		ui.draw_red_title_underline(cx, 250)
+		ui.red_blit_centered(ui.FONT_RED_LABEL, "FEEL THE BEAT  ·  SURVIVE THE DEVIL", ui.RED_C_TEXT_DIM, cx, 268)
+		ui.draw_red_card_gl(self.CARD, 0.38)
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "Main menu", ui.RED_C_RED_BRIGHT, cx, self.CARD.y + 36)
 		u = gs.current_user
 		status = (
 			f"Signed in as {u['display_name']}"
 			if u and u.get("display_name")
-			else "Playing as guest — sign in from the link below to sync scores"
+			else "Guest — use link below to sign in and sync scores"
 		)
-		ui.draw_glass_panel(self.CARD, "HEART BEAT DEVIL", "Main menu")
-		ui.draw_text_centered(
-			status,
-			self.CARD.centerx,
-			self.CARD.y + 118,
-			font=ui.FONT_MICRO or ui.FONT_SUB,
-			color=(130, 210, 165) if u and u.get("display_name") else (155, 152, 178),
-		)
-		mx, my = pygame.mouse.get_pos()
-
-		def hover(r):
-			return r.collidepoint(mx, my)
-
-		ui.draw_menu_chip(self.START_RECT, "Launch", "Choose input mode, then start a run", hover(self.START_RECT), accent=True)
-		ui.draw_menu_chip(self.LEADER_RECT, "Rankings", "Firebase realtime · top times per level", hover(self.LEADER_RECT), accent=False)
-		ui.draw_menu_chip(self.LEVEL_RECT, "Pick level", "Jump straight in (mode select follows)", hover(self.LEVEL_RECT), accent=False)
-		ui.draw_menu_chip(self.QUIT_RECT, "Quit", None, hover(self.QUIT_RECT), accent=False)
-		ah = self.ACCOUNT_RECT.collidepoint(mx, my)
-		col = ui.UI_ACCENT if ah else (130, 128, 155)
-		ui.draw_text_centered("Use a different account…", self.ACCOUNT_RECT.centerx, self.ACCOUNT_RECT.y + 4, font=ui.FONT_MICRO or ui.FONT_SUB, color=col)
+		st_col = ui.red_lerp_color(ui.RED_C_TEXT_DIM, (130, 210, 160), 0.55 if u and u.get("display_name") else 0.0)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, status, st_col, cx, self.CARD.y + 92)
+		titles = ["Launch", "Rankings", "Pick level", "Quit"]
+		subs = [
+			"Choose input mode, then start a run",
+			"Firebase realtime · top times per level",
+			"Jump straight in (mode select follows)",
+			None,
+		]
+		rects = [self.START_RECT, self.LEADER_RECT, self.LEVEL_RECT, self.QUIT_RECT]
+		for i in range(4):
+			ui.draw_red_nav_button(rects[i], titles[i], subs[i], self._ht[i], accent=(i == 0))
+		ac = ui.red_lerp_color(ui.RED_C_TEXT_DIM, ui.RED_C_ACCENT, self._acc_ht)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Use a different account…", ac, self.ACCOUNT_RECT.centerx, self.ACCOUNT_RECT.y + 2)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "ESC in game opens pause", ui.RED_C_TEXT_DIM, cx, ui.frame_h() - 28)
 		ui.end_2d()
 
 
 class AuthScreen:
 	def __init__(self, back_to_title=True):
+		ui.sync_frame_dimensions()
 		self.next_state = None
 		self.back_to_title = back_to_title
 		pygame.mouse.set_visible(True)
@@ -110,11 +122,15 @@ class AuthScreen:
 		self.password = ""
 		self.display_name = ""
 		self.message = ""
-		cx = W // 2
+		self._bg = ui.MenuBackdropRed(48)
+		self._ht_guest = 0.0
+		self._ht_submit = 0.0
+		self._ht_back = 0.0
+		cx = ui.frame_w() // 2
 		self.CARD_W = 820
 		self.CARD_H = 780
 		self.CARD_RECT = pygame.Rect(0, 0, self.CARD_W, self.CARD_H)
-		self.CARD_RECT.center = (cx, H // 2)
+		self.CARD_RECT.center = (cx, ui.frame_h() // 2)
 
 		self.GUEST_RECT = pygame.Rect(0, 0, 440, 50)
 		self.GUEST_RECT.center = (cx, self.CARD_RECT.y + 168)
@@ -253,28 +269,38 @@ class AuthScreen:
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+
+		def step(cur, cond):
+			t = 1.0 if cond else 0.0
+			return cur + (t - cur) * min(1.0, dt * 12)
+
+		self._ht_guest = step(self._ht_guest, self.GUEST_RECT.collidepoint(mp))
+		self._ht_submit = step(self._ht_submit, self.SUBMIT_RECT.collidepoint(mp))
+		self._ht_back = step(self._ht_back, self.BACK_RECT.collidepoint(mp))
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		ui.draw_glass_panel(self.CARD_RECT, "Welcome", "Sign in to sync scores — or continue as guest")
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		ui.draw_red_glass_panel(self.CARD_RECT, "Welcome", "Sign in to sync scores — or continue as guest")
 		mx, my = pygame.mouse.get_pos()
-		hg = self.GUEST_RECT.collidepoint(mx, my)
-		ui.draw_menu_chip(
+		ui.draw_red_nav_button(
 			self.GUEST_RECT,
 			"Continue as guest",
 			"Opens the main menu without Firebase login",
-			hg,
+			self._ht_guest,
 			accent=True,
 		)
 
 		def draw_tab(rect, label, active):
-			bg = (40, 40, 55) if active else (26, 26, 32)
-			border = (160, 120, 255) if active else (90, 90, 100)
+			bg = (55, 22, 22) if active else (26, 14, 16)
+			border = (220, 90, 90) if active else (95, 50, 50)
 			pygame.draw.rect(ui.SCREEN, bg, rect, border_radius=10)
 			pygame.draw.rect(ui.SCREEN, border, rect, width=2, border_radius=10)
 			ui.draw_text(label, rect.x + 55, rect.y + 14)
@@ -285,14 +311,20 @@ class AuthScreen:
 		if not fb.FIREBASE_WEB_API_KEY:
 			ui.draw_text("Missing firebase_api_key in .env", self.CARD_RECT.x + 90, self.TAB_LOGIN_RECT.bottom + 8)
 
-		ui.draw_labeled_input_box(self.email_rect, "Email", self.email, self.active_field == "email")
-		ui.draw_labeled_input_box(self.pass_rect, "Password", self.password, self.active_field == "password", mask=True)
+		ui.draw_red_labeled_input_box(self.email_rect, "Email", self.email, self.active_field == "email")
+		ui.draw_red_labeled_input_box(self.pass_rect, "Password", self.password, self.active_field == "password", mask=True)
 		if self.mode == "signup":
-			ui.draw_labeled_input_box(
+			ui.draw_red_labeled_input_box(
 				self.name_rect, "Display name", self.display_name, self.active_field == "display_name"
 			)
 		else:
-			ui.draw_text("TAB switch fields · ENTER submit", self.name_rect.x, self.name_rect.y + 12, font=ui.FONT_MICRO or ui.FONT_SUB, color=ui.UI_MUTED_TEXT)
+			ui.draw_text(
+				"TAB switch fields · ENTER submit",
+				self.name_rect.x,
+				self.name_rect.y + 12,
+				font=ui.FONT_MICRO or ui.FONT_SUB,
+				color=ui.RED_C_TEXT_DIM,
+			)
 
 		if self.message:
 			msg_rect = pygame.Rect(self.CARD_RECT.x + 70, self.SUBMIT_RECT.y - 200, self.CARD_W - 140, 180)
@@ -327,11 +359,13 @@ class AuthScreen:
 				ui.draw_text(line[:96], msg_rect.x + 14, y)
 				y += 28
 
-		hs = self.SUBMIT_RECT.collidepoint(mx, my)
-		ui.draw_menu_chip(self.SUBMIT_RECT, "Sign in" if self.mode == "login" else "Create account", None, hs, accent=False)
-		hb = self.BACK_RECT.collidepoint(mx, my)
+		ui.draw_red_single_button(
+			self.SUBMIT_RECT,
+			"Sign in" if self.mode == "login" else "Create account",
+			self._ht_submit,
+		)
 		lbl = "Back to title" if self.back_to_title else "Back to menu"
-		ui.draw_menu_chip(self.BACK_RECT, lbl, None, hb, accent=False)
+		ui.draw_red_single_button(self.BACK_RECT, lbl, self._ht_back)
 		ui.end_2d()
 
 
@@ -340,6 +374,7 @@ class TitleScreen:
 		self.next_state = None
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
+		self._bg = ui.MenuBackdropRed(60)
 
 	def handleEvents(self, events):
 		for event in events:
@@ -352,41 +387,43 @@ class TitleScreen:
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		if not ui.menu_background_file_exists():
-			ui.draw_title_particles()
-		t = pygame.time.get_ticks() / 1000.0
-		pulse = 0.82 + 0.18 * math.sin(t * 2.0)
-		ac = (
-			int(ui.UI_ACCENT[0] * pulse),
-			int(ui.UI_ACCENT[1] * pulse),
-			min(255, int(ui.UI_ACCENT[2] * (0.92 + 0.08 * pulse))),
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		cx = ui.frame_w() // 2
+		ui.draw_red_main_title(cx, 120)
+		ui.draw_red_title_underline(cx, 268)
+		ui.red_blit_centered(ui.FONT_RED_LABEL, "STRESS-RESPONSIVE PLATFORMER", ui.RED_C_TEXT_DIM, cx, 288)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Your heart rate — or your face — reshapes the run.", ui.RED_C_TEXT, cx, 328)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Capstone build · OpenGL + pygame + Firebase", ui.RED_C_TEXT_DIM, cx, 362)
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"Press any key or click to sign in (or continue as guest)",
+			ui.RED_C_ACCENT,
+			cx,
+			ui.frame_h() - 148,
 		)
-		hero = ui.FONT_HERO or ui.FONT_TITLE
-		cy = H // 2 - 72
-		ui.draw_text_centered("HEART BEAT DEVIL", W // 2, cy - 138, font=hero, color=ac)
-		ui.draw_text_centered("STRESS-RESPONSIVE PLATFORMER", W // 2, cy - 38, font=ui.FONT_MICRO or ui.FONT_SUB, color=(140, 138, 168))
-		ui.draw_text_centered("Your heart rate — or your face — reshapes the run.", W // 2, cy + 6, font=ui.FONT_NAV or ui.FONT_SUB, color=ui.UI_MUTED_TEXT)
-		ui.draw_text_centered("Capstone build · OpenGL + pygame + Firebase", W // 2, cy + 50, font=ui.FONT_MICRO or ui.FONT_SUB, color=(120, 118, 145))
-		ui.draw_cta_strip("Press any key or click to sign in (or continue as guest)", H - 148, width=680)
 		ui.end_2d()
 
 
 class LevelSelection:
 	def __init__(self):
+		ui.sync_frame_dimensions()
 		self.next_state = None
+		self._bg = ui.MenuBackdropRed(55)
+		self._ht = [0.0, 0.0, 0.0, 0.0]
 		self.button_width = 440
 		self.button_height = 56
 		self.button_spacing = 11
 		self.CARD = pygame.Rect(0, 0, 720, 540)
-		self.CARD.center = (W // 2, H // 2 + 16)
+		self.CARD.center = (ui.frame_w() // 2, ui.frame_h() // 2 + 16)
 		cx = self.CARD.centerx
 		y0 = self.CARD.y + 168
 		self.LVL1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
@@ -414,24 +451,31 @@ class LevelSelection:
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		rects = [self.LVL1_RECT, self.LVL2_RECT, self.LVL3_RECT, self.BACK_RECT]
+		for i, r in enumerate(rects):
+			t = 1.0 if r.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		ui.draw_glass_panel(self.CARD, "Direct deploy", "Choose arena · input mode follows")
-		mx, my = pygame.mouse.get_pos()
-
-		def hover(r):
-			return r.collidepoint(mx, my)
-
-		ui.draw_menu_chip(self.LVL1_RECT, "Level 1 — Training grounds", "Recommended first drop", hover(self.LVL1_RECT), accent=True)
-		ui.draw_menu_chip(self.LVL2_RECT, "Level 2 — Pressure climb", "Tighter timing windows", hover(self.LVL2_RECT), accent=False)
-		ui.draw_menu_chip(self.LVL3_RECT, "Level 3 — Work in progress", "Experimental layout", hover(self.LVL3_RECT), accent=False)
-		ui.draw_menu_chip(self.BACK_RECT, "Return to console", None, hover(self.BACK_RECT), accent=False)
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		ui.draw_red_card_gl(self.CARD, 0.4)
+		cx = self.CARD.centerx
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "Direct deploy", ui.RED_C_RED_BRIGHT, cx, self.CARD.y + 36)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Choose arena · input mode follows", ui.RED_C_TEXT_DIM, cx, self.CARD.y + 88)
+		ui.draw_red_nav_button(
+			self.LVL1_RECT, "Level 1 — Training grounds", "Recommended first drop", self._ht[0], accent=True
+		)
+		ui.draw_red_nav_button(self.LVL2_RECT, "Level 2 — Pressure climb", "Tighter timing windows", self._ht[1], accent=False)
+		ui.draw_red_nav_button(self.LVL3_RECT, "Level 3 — Work in progress", "Experimental layout", self._ht[2], accent=False)
+		ui.draw_red_single_button(self.BACK_RECT, "← Main menu", self._ht[3])
 		ui.end_2d()
 
 
@@ -449,8 +493,8 @@ class LvlComplete:
 		self.button_width = 300
 		self.button_height = 60
 		self.spacing = 20
-		cx = W // 2
-		start_y = H // 2
+		cx = ui.frame_w() // 2
+		start_y = ui.frame_h() // 2
 		self.CONTINUE_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
 		self.CONTINUE_RECT.center = (cx, start_y)
 
@@ -471,21 +515,21 @@ class LvlComplete:
 		glColor4f(0, 0, 0, 0.7)
 		glBegin(GL_QUADS)
 		glVertex2f(0, 0)
-		glVertex2f(W, 0)
-		glVertex2f(W, H)
-		glVertex2f(0, H)
+		glVertex2f(ui.frame_w(), 0)
+		glVertex2f(ui.frame_w(), ui.frame_h())
+		glVertex2f(0, ui.frame_h())
 		glEnd()
-		ui.draw_text(f"{self.level_name} Level Complete!", W // 2 - 180, 100)
-		ui.draw_text(f"Time: {self.finish_time:.2f}s", W // 2 - 140, 180)
-		ui.draw_text(f"Deaths: {self.deaths}", W // 2 - 140, 220)
-		ui.draw_text("Leaderboard", W // 2 - 100, 270)
+		ui.draw_text(f"{self.level_name} Level Complete!", ui.frame_w() // 2 - 180, 100)
+		ui.draw_text(f"Time: {self.finish_time:.2f}s", ui.frame_w() // 2 - 140, 180)
+		ui.draw_text(f"Deaths: {self.deaths}", ui.frame_w() // 2 - 140, 220)
+		ui.draw_text("Leaderboard", ui.frame_w() // 2 - 100, 270)
 		y = 310
 		if not self.scores:
-			ui.draw_text("No scores yet — finish a run and submit your name.", W // 2 - 280, y, font=ui.FONT_SUB, color=ui.UI_MUTED_TEXT)
+			ui.draw_text("No scores yet — finish a level (exit door saves automatically).", ui.frame_w() // 2 - 320, y, font=ui.FONT_SUB, color=ui.UI_MUTED_TEXT)
 		else:
 			for i, score in enumerate(self.scores):
 				line = f"{i+1}. {score['player']}  {score['time']:.2f}s  deaths:{score['deaths']}"
-				ui.draw_text(line, W // 2 - 260, y)
+				ui.draw_text(line, ui.frame_w() // 2 - 260, y)
 				y += 44
 		pygame.draw.rect(ui.SCREEN, (100, 100, 100), self.CONTINUE_RECT)
 		ui.draw_text("Continue", self.CONTINUE_RECT.centerx - 70, self.CONTINUE_RECT.centery - 15)
@@ -495,11 +539,12 @@ class LvlComplete:
 class PauseMenu:
 	def __init__(self, previous_state):
 		self.previous_state = previous_state
-		self.button_width = 300
-		self.button_height = 60
-		self.spacing = 20
-		cx = W // 2
-		start_y = H // 2
+		self.button_width = 320
+		self.button_height = 58
+		self.spacing = 16
+		cx = ui.frame_w() // 2
+		start_y = ui.frame_h() // 2 + 30
+		self._ht = [0.0, 0.0, 0.0]
 		self.RESUME_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
 		self.RESUME_RECT.center = (cx, start_y)
 		self.MENU_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
@@ -521,46 +566,65 @@ class PauseMenu:
 		return None
 
 	def update(self, dt):
-		pass
+		mp = pygame.mouse.get_pos()
+		rects = [self.RESUME_RECT, self.MENU_RECT, self.QUIT_RECT]
+		for i, r in enumerate(rects):
+			t = 1.0 if r.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
 
 	def draw(self):
 		self.previous_state.draw()
 		ui.begin_2d()
-		glColor4f(0, 0, 0, 0.7)
-		glBegin(GL_QUADS)
-		glVertex2f(0, 0)
-		glVertex2f(W, 0)
-		glVertex2f(W, H)
-		glVertex2f(0, H)
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		ui.red_gl_rect(0, 0, ui.frame_w(), ui.frame_h(), 0, 0, 0, 0.72)
+		cy = ui.frame_h() // 2 - 80
+		glColor4f(0.7, 0.1, 0.1, 0.4)
+		glLineWidth(1.0)
+		glBegin(GL_LINES)
+		glVertex2f(0, cy)
+		glVertex2f(ui.frame_w(), cy)
 		glEnd()
-		pygame.draw.rect(ui.SCREEN, (100, 100, 100), self.RESUME_RECT)
-		pygame.draw.rect(ui.SCREEN, (100, 100, 100), self.MENU_RECT)
-		pygame.draw.rect(ui.SCREEN, (100, 100, 100), self.QUIT_RECT)
-		ui.draw_text("Resume Game", self.RESUME_RECT.centerx - 100, self.RESUME_RECT.centery - 15)
-		ui.draw_text("Main Menu", self.MENU_RECT.centerx - 80, self.MENU_RECT.centery - 15)
-		ui.draw_text("Quit Game", self.QUIT_RECT.centerx - 72, self.QUIT_RECT.centery - 15)
-		ui.draw_text("Paused", W // 2 - 60, H // 2 - 140)
+		cx = ui.frame_w() // 2
+		pw, ph = 420, 340
+		px, py = cx - pw // 2, cy - 30
+		ui.red_gl_rect(px, py, pw, ph, 0.04, 0.04, 0.08, 0.88)
+		ui.red_gl_border(px, py, pw, ph, 0.6, 0.1, 0.1, 0.5, 1.0)
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "PAUSED", ui.RED_C_RED_BRIGHT, cx, cy - 20)
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 100, cy + 50)
+		glVertex2f(cx + 100, cy + 50)
+		glEnd()
+		ui.draw_red_single_button(self.RESUME_RECT, "Resume", self._ht[0])
+		ui.draw_red_single_button(self.MENU_RECT, "Main Menu", self._ht[1])
+		ui.draw_red_single_button(self.QUIT_RECT, "Quit Game", self._ht[2])
 		ui.end_2d()
 
 
 class LeaderboardScreen:
-	def __init__(self, level_name, next_level, upload_ok=None, upload_err=None):
+	_RANK_COLORS = [(255, 200, 40), (180, 180, 195), (200, 130, 60)]
+
+	def __init__(self, level_name, next_level, upload_ok=None, upload_err=None, last_run=None):
+		ui.sync_frame_dimensions()
 		self.level_name = level_name
 		self.next_level = next_level
 		self._upload_ok = upload_ok
 		self._upload_err = upload_err
+		self._last_run = last_run
 		self.next_state = None
+		self._bg = ui.MenuBackdropRed(45)
+		self._cont_ht = 0.0
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-		self.scores = fb.get_top_scores(level_name)
-		self.PANEL = pygame.Rect(0, 0, 920, 720)
-		self.PANEL.center = (W // 2, H // 2 + 8)
-		self.CONTINUE_RECT = pygame.Rect(0, 0, 380, 54)
-		self.CONTINUE_RECT.center = (W // 2, self.PANEL.bottom - 56)
+		self.scores = fb.get_top_scores(level_name, limit=40)
+		self.CONTINUE_RECT = pygame.Rect(0, 0, 380, 58)
+		self.CONTINUE_RECT.center = (ui.frame_w() // 2, ui.frame_h() - 100)
 		self._reload_timer = 0.0
 
 	def on_enter(self):
-		self.scores = fb.get_top_scores(self.level_name)
+		self.scores = fb.get_top_scores(self.level_name, limit=40)
 
 	def handleEvents(self, events):
 		for event in events:
@@ -575,73 +639,138 @@ class LeaderboardScreen:
 		return None
 
 	def update(self, dt):
+		self._bg.update(dt)
 		self._reload_timer += dt
 		if self._reload_timer >= 1.25:
 			self._reload_timer = 0.0
-			self.scores = fb.get_top_scores(self.level_name)
+			self.scores = fb.get_top_scores(self.level_name, limit=40)
+		t = 1.0 if self.CONTINUE_RECT.collidepoint(pygame.mouse.get_pos()) else 0.0
+		self._cont_ht += (t - self._cont_ht) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		ui.draw_glass_panel(self.PANEL, self.level_name, "Firebase Realtime Database · fastest times · live refresh")
-		y_extra = 0
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		cx = ui.frame_w() // 2
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "LEADERBOARD", ui.RED_C_RED_BRIGHT, cx, 72)
+		ui.red_blit_centered(ui.FONT_RED_LABEL, self.level_name.upper(), ui.RED_C_TEXT_DIM, cx, 128)
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 300, 152)
+		glVertex2f(cx + 300, 152)
+		glEnd()
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"Firebase Realtime Database · fastest clears (top 40 pulled)",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			162,
+		)
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"No submit button — your run is saved when you reach the exit door.",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			178,
+		)
+
+		y_msg = 200
 		if self._upload_ok is True:
-			y_extra = 44
-			ui.draw_text_centered(
-				"Score saved online (Realtime Database → leaderboards/).",
-				W // 2,
-				self.PANEL.y + 108,
-				font=ui.FONT_MICRO or ui.FONT_SUB,
-				color=(130, 210, 160),
+			ui.red_blit_centered(
+				ui.FONT_RED_SMALL,
+				"Saved to online leaderboard.",
+				(130, 210, 160),
+				cx,
+				y_msg,
 			)
+			y_msg += 36
 		elif self._upload_ok is False:
-			y_extra = 52
-			ui.draw_text_centered(
-				"Score not saved — see terminal log. (Profiles live in Firestore; scores live in Realtime DB.)",
-				W // 2,
-				self.PANEL.y + 100,
-				font=ui.FONT_MICRO or ui.FONT_SUB,
-				color=(240, 140, 140),
+			ui.red_blit_centered(
+				ui.FONT_RED_SMALL,
+				"Score not saved — check terminal / FIREBASE_DATABASE_URL",
+				(240, 140, 140),
+				cx,
+				y_msg,
 			)
+			y_msg += 30
 			if self._upload_err:
-				ui.draw_text_centered(
-					self._upload_err[:140],
-					W // 2,
-					self.PANEL.y + 126,
-					font=ui.FONT_MICRO or ui.FONT_SUB,
-					color=(200, 160, 160),
-				)
-		y = self.PANEL.y + 138 + y_extra
+				ui.red_blit_centered(ui.FONT_RED_SMALL, self._upload_err[:120], (200, 160, 160), cx, y_msg)
+				y_msg += 32
+		if self._last_run:
+			lr = self._last_run
+			pname = str(lr.get("player", "Player"))
+			tm = float(lr.get("time", 0.0))
+			dt = int(lr.get("deaths", 0))
+			ui.red_blit_centered(
+				ui.FONT_RED_MENU,
+				f"This run · {pname} · {tm:.2f}s · deaths {dt}",
+				ui.RED_C_ACCENT,
+				cx,
+				y_msg,
+			)
+			y_msg += 40
+
+		y0 = y_msg + 16
+		btn_top = self.CONTINUE_RECT.top
+		avail = max(220, btn_top - y0 - 72)
+		row_h = 48
+		max_rows = max(5, min(18, avail // row_h))
+		visible = self.scores[:max_rows]
 		if not self.scores:
-			ui.draw_text_centered("No scores for this arena yet.", W // 2, y, font=ui.FONT_NAV or ui.FONT_SUB, color=ui.UI_MUTED_TEXT)
-			ui.draw_text_centered(
-				"Finish a run, submit a callsign, or verify FIREBASE_DATABASE_URL in .env",
-				W // 2,
-				y + 44,
-				font=ui.FONT_MICRO or ui.FONT_SUB,
-				color=(130, 128, 150),
+			ui.red_blit_centered(ui.FONT_RED_LABEL, "No scores for this arena yet.", ui.RED_C_TEXT_DIM, cx, y0 + 40)
+			ui.red_blit_centered(
+				ui.FONT_RED_SMALL,
+				"Finish a level — your time posts automatically when you reach the door",
+				ui.RED_C_TEXT_DIM,
+				cx,
+				y0 + 80,
 			)
 		else:
-			for i, score in enumerate(self.scores):
-				line = f"{i + 1}.  {score['player']}   {score['time']:.2f}s   deaths {score['deaths']}"
-				ui.draw_text_centered(line, W // 2, y, font=ui.FONT_NAV or ui.FONT, color=config.WHITE)
-				y += 48
-		mx, my = pygame.mouse.get_pos()
-		h = self.CONTINUE_RECT.collidepoint(mx, my)
-		ui.draw_menu_chip(self.CONTINUE_RECT, "Continue", None, h, accent=True)
+			ui.red_blit_left(ui.FONT_RED_SMALL, "RANK", ui.RED_C_TEXT_DIM, cx - 280, y0)
+			ui.red_blit_left(ui.FONT_RED_SMALL, "PLAYER", ui.RED_C_TEXT_DIM, cx - 180, y0)
+			ui.red_blit_right(ui.FONT_RED_SMALL, "TIME", ui.RED_C_TEXT_DIM, cx + 80, y0)
+			ui.red_blit_right(ui.FONT_RED_SMALL, "DEATHS", ui.RED_C_TEXT_DIM, cx + 280, y0)
+			if len(self.scores) > len(visible):
+				ui.red_blit_centered(
+					ui.FONT_RED_SMALL,
+					f"Showing top {len(visible)} of {len(self.scores)} loaded",
+					ui.RED_C_TEXT_DIM,
+					cx,
+					y0 - 18,
+				)
+			glColor4f(0.4, 0.08, 0.08, 0.3)
+			glBegin(GL_LINES)
+			glVertex2f(cx - 280, y0 + 22)
+			glVertex2f(cx + 280, y0 + 22)
+			glEnd()
+			for i, score in enumerate(visible):
+				row_y_top = y0 + 32 + i * row_h
+				row_y_mid = row_y_top + 28
+				ui.red_gl_rect(cx - 285, row_y_top, 570, row_h - 4, 1, 1, 1, 0.06 if i % 2 == 0 else 0.0)
+				rank_col = self._RANK_COLORS[i] if i < 3 else ui.RED_C_TEXT_DIM
+				ui.red_blit_left(ui.FONT_RED_MENU, f"#{i + 1}", rank_col, cx - 280, row_y_mid)
+				ui.red_blit_left(ui.FONT_RED_MENU, str(score.get("player", "???")), ui.RED_C_TEXT, cx - 180, row_y_mid)
+				ui.red_blit_right(ui.FONT_RED_MENU, f"{score['time']:.2f}s", ui.RED_C_ACCENT, cx + 80, row_y_mid)
+				ui.red_blit_right(ui.FONT_RED_LABEL, str(score["deaths"]), ui.RED_C_RED, cx + 280, row_y_mid)
+
+		ui.draw_red_single_button(self.CONTINUE_RECT, "Continue", self._cont_ht)
 		ui.end_2d()
 
 
 class LeaderboardHubScreen:
 	def __init__(self):
+		ui.sync_frame_dimensions()
 		self.next_state = None
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
+		self._bg = ui.MenuBackdropRed(50)
+		self._ht = [0.0, 0.0, 0.0, 0.0]
 		self.CARD = pygame.Rect(0, 0, 760, 660)
-		self.CARD.center = (W // 2, H // 2 + 12)
+		self.CARD.center = (ui.frame_w() // 2, ui.frame_h() // 2 + 12)
 		cx = self.CARD.centerx
 		y = self.CARD.y + 168
 		bw, bh, sp = 440, 54, 14
@@ -674,107 +803,158 @@ class LeaderboardHubScreen:
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		for i, r in enumerate([self.L1, self.L2, self.L3, self.BACK]):
+			t = 1.0 if r.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		ui.draw_glass_panel(self.CARD, "Rankings", "Realtime data · same boards as post-mission debrief")
-		mx, my = pygame.mouse.get_pos()
-
-		def hover(r):
-			return r.collidepoint(mx, my)
-
-		ui.draw_menu_chip(self.L1, "Level 1 board", "Top five clears", hover(self.L1), accent=True)
-		ui.draw_menu_chip(self.L2, "Level 2 board", "Escalating tempo", hover(self.L2), accent=False)
-		ui.draw_menu_chip(self.L3, "Level 3 board", "Experimental route", hover(self.L3), accent=False)
-		ui.draw_menu_chip(self.BACK, "← Back to main menu", "Or press Esc", hover(self.BACK), accent=False)
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		ui.draw_red_card_gl(self.CARD, 0.4)
+		cx = self.CARD.centerx
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "Rankings", ui.RED_C_RED_BRIGHT, cx, self.CARD.y + 36)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Clears save at the exit door — no submit step", ui.RED_C_TEXT_DIM, cx, self.CARD.y + 92)
+		ui.draw_red_nav_button(self.L1, "Level 1 board", "Top five clears", self._ht[0], accent=True)
+		ui.draw_red_nav_button(self.L2, "Level 2 board", "Escalating tempo", self._ht[1], accent=False)
+		ui.draw_red_nav_button(self.L3, "Level 3 board", "Experimental route", self._ht[2], accent=False)
+		ui.draw_red_single_button(self.BACK, "← Back to main menu", self._ht[3])
 		ui.end_2d()
 
 
 class NameEntryScreen:
 	def __init__(self, level_name, finish_time, deaths, next_level):
+		ui.sync_frame_dimensions()
 		self.level_name = level_name
 		self.finish_time = finish_time
 		self.deaths = deaths
 		self.next_level = next_level
 		self.next_state = None
 		self.player_name = (gs.current_user or {}).get("display_name") or ""
+		self._bg = ui.MenuBackdropRed(40)
+		self._submit_ht = 0.0
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-		self.SUBMIT_RECT = pygame.Rect(W // 2 - 150, 550, 300, 60)
+		self.SUBMIT_RECT = pygame.Rect(0, 0, 300, 58)
+		self.SUBMIT_RECT.center = (ui.frame_w() // 2, ui.frame_h() - 120)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
 			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					return MainMenu()
 				if event.key == pygame.K_BACKSPACE:
 					self.player_name = self.player_name[:-1]
 				elif event.key == pygame.K_RETURN:
 					if len(self.player_name.strip()) > 0:
 						return self.submit_player_score()
 				else:
-					if len(self.player_name) < 16:
-						if event.unicode.isprintable():
-							self.player_name += event.unicode
-			if event.type == pygame.MOUSEBUTTONDOWN:
-				if self.SUBMIT_RECT.collidepoint(event.pos):
-					if len(self.player_name.strip()) > 0:
-						return self.submit_player_score()
+					if len(self.player_name) < 16 and event.unicode.isprintable():
+						self.player_name += event.unicode
+			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+				if self.SUBMIT_RECT.collidepoint(event.pos) and len(self.player_name.strip()) > 0:
+					return self.submit_player_score()
 		return None
 
 	def submit_player_score(self):
-		ok, err = fb.submit_score(self.level_name, self.player_name, self.finish_time, self.deaths)
-		return LeaderboardScreen(self.level_name, self.next_level, upload_ok=ok, upload_err=err)
+		name = (self.player_name or "Player").strip()[:64]
+		ok, err = fb.submit_score(self.level_name, name, self.finish_time, self.deaths, source="menu_submit")
+		last_run = {
+			"player": name,
+			"time": float(self.finish_time),
+			"deaths": int(self.deaths),
+			"saved": ok,
+		}
+		return LeaderboardScreen(
+			self.level_name, self.next_level, upload_ok=ok, upload_err=err, last_run=last_run
+		)
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		t = 1.0 if self.SUBMIT_RECT.collidepoint(pygame.mouse.get_pos()) else 0.0
+		self._submit_ht += (t - self._submit_ht) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0, 0, 0, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.draw_text("Level comlpete!", W // 2 - 100, 100)
-		ui.draw_text(f"Time: {self.finish_time:.2f}s", W // 2 - 80, 200)
-		ui.draw_text(f"Deaths: {self.deaths}", W // 2 - 80, 250)
-		ui.draw_text("Enter Your Name", W // 2 - 100, 350)
-		pygame.draw.rect(ui.SCREEN, (60, 60, 60), (W // 2 - 200, 400, 400, 70))
-		ui.draw_text(self.player_name, W // 2 - 80, 440)
-		pygame.draw.rect(ui.SCREEN, (200, 200, 200), self.SUBMIT_RECT)
-		ui.draw_text("Submit Score", self.SUBMIT_RECT.centerx - 95, self.SUBMIT_RECT.centery - 16)
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		cx = ui.frame_w() // 2
+		pw, ph = 560, 460
+		px, py = cx - pw // 2, 200
+		ui.red_gl_rect(px, py, pw, ph, ui.RED_PANEL[0] / 255, ui.RED_PANEL[1] / 255, ui.RED_PANEL[2] / 255, 0.92)
+		ui.red_gl_border(px, py, pw, ph, 0.55, 0.08, 0.08, 0.6, 1.5)
+		ui.red_gl_rect(px, py, pw, 3, 0.8, 0.15, 0.15, 0.9)
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "LEVEL COMPLETE", ui.RED_C_RED_BRIGHT, cx, 228)
+		glColor4f(0.5, 0.08, 0.08, 0.35)
+		glBegin(GL_LINES)
+		glVertex2f(px + 30, 308)
+		glVertex2f(px + pw - 30, 308)
+		glEnd()
+		col_l = cx - 120
+		col_r = cx + 120
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "TIME", ui.RED_C_TEXT_DIM, col_l, 328)
+		ui.red_blit_centered(ui.FONT_RED_MENU, f"{self.finish_time:.2f}s", ui.RED_C_ACCENT, col_l, 358)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "DEATHS", ui.RED_C_TEXT_DIM, col_r, 328)
+		ui.red_blit_centered(ui.FONT_RED_MENU, str(self.deaths), ui.RED_C_RED_BRIGHT, col_r, 358)
+		glColor4f(0.5, 0.08, 0.08, 0.35)
+		glBegin(GL_LINES)
+		glVertex2f(px + 30, 418)
+		glVertex2f(px + pw - 30, 418)
+		glEnd()
+		ui.red_blit_centered(ui.FONT_RED_LABEL, "ENTER YOUR NAME", ui.RED_C_TEXT_DIM, cx, 438)
+		iw, ih = 380, 56
+		ix, iy = cx - iw // 2, 472
+		ui.red_gl_rect(ix, iy, iw, ih, 0.06, 0.06, 0.10, 1.0)
+		ui.red_gl_border(ix, iy, iw, ih, 0.6, 0.12, 0.12, 0.7, 1.0)
+		show_cursor = (pygame.time.get_ticks() // 530) % 2 == 0
+		display_name = self.player_name + ("|" if show_cursor else " ")
+		ui.red_blit_centered(ui.FONT_RED_MENU, display_name, ui.RED_C_WHITE, cx, iy + 36)
+		ui.draw_red_single_button(self.SUBMIT_RECT, "Submit Score", self._submit_ht)
+		ui.red_blit_centered(ui.FONT_RED_SMALL, "Esc — main menu without saving", ui.RED_C_TEXT_DIM, cx, ui.frame_h() - 36)
 		ui.end_2d()
 
 
 class ModeSelection:
 	def __init__(self):
+		ui.sync_frame_dimensions()
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
 		self.training_mode = False
 		self.next_state = None
 		self.target_level = "level1"
-		self.button_width = 360
-		self.button_height = 100
-		self.button_spacing = 18
-		self.CARD = pygame.Rect(0, 0, 640, 560)
-		self.CARD.center = (W // 2, H // 2 + 10)
-		cx = self.CARD.centerx
-		y1 = self.CARD.y + 195
+		self._bg = ui.MenuBackdropRed(50)
+		self._ht = [0.0, 0.0, 0.0]
+		self.button_width = 420
+		self.button_height = 90
+		self.button_spacing = 16
+		cx = ui.frame_w() // 2
+		base_y = 420
 		self.MODE1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE1_RECT.center = (cx, y1)
+		self.MODE1_RECT.center = (cx, base_y)
 		self.MODE2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE2_RECT.center = (cx, y1 + self.button_height + self.button_spacing)
-		self.TRAIN_RECT = pygame.Rect(0, 0, self.button_width, 72)
-		self.TRAIN_RECT.center = (cx, y1 + 2 * (self.button_height + self.button_spacing) + 10)
+		self.MODE2_RECT.center = (cx, base_y + self.button_height + self.button_spacing)
+		self.TRAIN_RECT = pygame.Rect(0, 0, self.button_width, 52)
+		self.TRAIN_RECT.center = (cx, base_y + 2 * (self.button_height + self.button_spacing) + 24)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
 			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					return "main_menu"
 				if event.key == pygame.K_1:
 					gs.input_mode = InputMode.HEART_RATE
 					gs.training_mode = self.training_mode
@@ -786,64 +966,99 @@ class ModeSelection:
 				if event.key == pygame.K_t:
 					self.training_mode = not self.training_mode
 			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-				mousePos = event.pos
-				if self.MODE1_RECT.collidepoint(mousePos):
+				mp = event.pos
+				if self.MODE1_RECT.collidepoint(mp):
 					gs.input_mode = InputMode.HEART_RATE
 					gs.training_mode = self.training_mode
 					return self.target_level
-				if self.MODE2_RECT.collidepoint(mousePos):
+				if self.MODE2_RECT.collidepoint(mp):
 					gs.input_mode = InputMode.EMOTION
 					gs.training_mode = self.training_mode
 					return self.target_level
-				if self.TRAIN_RECT.collidepoint(mousePos):
+				if self.TRAIN_RECT.collidepoint(mp):
 					self.training_mode = not self.training_mode
 		return None
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		self._ht[0] += ((1.0 if self.MODE1_RECT.collidepoint(mp) else 0.0) - self._ht[0]) * min(1.0, dt * 12)
+		self._ht[1] += ((1.0 if self.MODE2_RECT.collidepoint(mp) else 0.0) - self._ht[1]) * min(1.0, dt * 12)
+		self._ht[2] += ((1.0 if self.TRAIN_RECT.collidepoint(mp) else 0.0) - self._ht[2]) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0.04, 0.04, 0.08, 1)
+		glClearColor(*ui.RED_CLEAR_RGB, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 		ui.begin_2d()
-		ui.init_menu_typography()
-		ui.draw_menu_backdrop()
-		ui.draw_glass_panel(self.CARD, "HEART BEAT DEVIL", "Select how the simulation reads your body")
-		ui.draw_text_centered(
-			"Keys: 1 Heart rate  ·  2 Emotion  ·  T Training",
-			self.CARD.centerx,
-			self.CARD.y + 132,
-			font=ui.FONT_MICRO or ui.FONT_SUB,
-			color=(140, 138, 165),
+		ui.init_red_theme_fonts()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
+		cx = ui.frame_w() // 2
+		ui.red_blit_centered(ui.FONT_RED_HEADING, "SELECT MODE", ui.RED_C_RED_BRIGHT, cx, 120)
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 220, 188)
+		glVertex2f(cx + 220, 188)
+		glEnd()
+		ui.red_blit_centered(ui.FONT_RED_LABEL, "Choose how your body controls the run", ui.RED_C_TEXT_DIM, cx, 202)
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"Keys: 1 Heart rate  ·  2 Emotion  ·  T Training  ·  Esc Main menu",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			232,
 		)
-		ui.draw_text_centered(
-			"Emotion route needs webcam + opencv / deepface / tensorflow",
-			self.CARD.centerx,
-			self.CARD.y + 158,
-			font=ui.FONT_MICRO or ui.FONT_SUB,
-			color=(110, 108, 130),
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"Emotion route: webcam + OpenCV / DeepFace / TensorFlow",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			258,
 		)
-		mx, my = pygame.mouse.get_pos()
-
-		def hover(r):
-			return r.collidepoint(mx, my)
-
-		m1 = hover(self.MODE1_RECT)
-		m2 = hover(self.MODE2_RECT)
-		ui.draw_menu_chip(self.MODE1_RECT, "1 — Heart rate (BPM)", "BLE / Pulsoid + UDP fallback", m1, accent=True)
-		ui.draw_menu_chip(self.MODE2_RECT, "2 — Facial emotion", "Webcam + DeepFace classifier", m2, accent=False)
-		col_tr = ui.UI_ACCENT if self.training_mode else ui.UI_BTN_BORDER
-		bg_tr = (28, 48, 32) if self.training_mode else ui.UI_BTN_BG
-		if hover(self.TRAIN_RECT):
-			bg_tr = (38, 58, 42)
-		pygame.draw.rect(ui.SCREEN, bg_tr, self.TRAIN_RECT, border_radius=14)
-		pygame.draw.rect(ui.SCREEN, col_tr, self.TRAIN_RECT, width=2, border_radius=14)
-		status = "ON" if self.training_mode else "OFF"
-		ui.draw_text_centered(
-			f"Training mode: {status} (click or T)",
-			self.TRAIN_RECT.centerx,
-			self.TRAIN_RECT.centery - 10,
-			font=ui.FONT_SUB,
-			color=config.WHITE,
+		ui.draw_red_nav_button(self.MODE1_RECT, "", "", self._ht[0], accent=True)
+		ui.red_blit_centered(ui.FONT_RED_MENU, "Heart rate (BPM)", ui.RED_C_TEXT, cx, self.MODE1_RECT.top + 14)
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"BLE / Pulsoid + UDP fallback  ·  press 1",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			self.MODE1_RECT.top + 50,
 		)
+		ui.draw_red_nav_button(self.MODE2_RECT, "", "", self._ht[1], accent=False)
+		ui.red_blit_centered(ui.FONT_RED_MENU, "Facial emotion", ui.RED_C_TEXT, cx, self.MODE2_RECT.top + 14)
+		ui.red_blit_centered(
+			ui.FONT_RED_SMALL,
+			"Webcam + DeepFace  ·  press 2",
+			ui.RED_C_TEXT_DIM,
+			cx,
+			self.MODE2_RECT.top + 50,
+		)
+		tr_on = self.training_mode
+		tr_bg = (10, 30, 10) if tr_on else ui.RED_PANEL
+		ui.red_gl_rect(
+			self.TRAIN_RECT.x,
+			self.TRAIN_RECT.y,
+			self.TRAIN_RECT.w,
+			self.TRAIN_RECT.h,
+			tr_bg[0] / 255,
+			tr_bg[1] / 255,
+			tr_bg[2] / 255,
+			0.9,
+		)
+		tr_bc = (60, 200, 60) if tr_on else (60, 60, 60)
+		ui.red_gl_border(
+			self.TRAIN_RECT.x,
+			self.TRAIN_RECT.y,
+			self.TRAIN_RECT.w,
+			self.TRAIN_RECT.h,
+			tr_bc[0] / 255,
+			tr_bc[1] / 255,
+			tr_bc[2] / 255,
+			0.8,
+			1.0,
+		)
+		status_col = (80, 220, 80) if tr_on else ui.RED_C_TEXT_DIM
+		status_label = "Training mode  ·  ON  [T]" if tr_on else "Training mode  ·  OFF  [T]"
+		ui.red_blit_centered(ui.FONT_RED_LABEL, status_label, status_col, cx, self.TRAIN_RECT.top + 14)
 		ui.end_2d()

@@ -12,6 +12,11 @@ from firebase_admin import credentials, db as rtdb, firestore
 
 import game_state
 
+# Directory containing this module (project folder). Used so credential paths in .env are not
+# resolved relative to the process cwd — running 3DrageBait.py from the repo root vs. this folder
+# used to break FIREBASE_SERVICE_ACCOUNT_JSON=../firebase_key.json and similar.
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _load_dotenv() -> None:
 	"""Load .env values into process environment (no dependency)."""
@@ -50,10 +55,29 @@ def _ssl_context() -> ssl.SSLContext:
 
 _load_dotenv()
 
-_FIREBASE_KEY_PATH = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.path.join(
-	os.path.dirname(__file__), "firebase_key.json"
-)
+
+def _resolve_service_account_path() -> str:
+	"""Absolute path to the service account JSON (env or default next to this file)."""
+	raw = (os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip().strip('"').strip("'")
+	if not raw:
+		return os.path.join(_PACKAGE_DIR, "firebase_key.json")
+	p = os.path.expanduser(raw)
+	if os.path.isabs(p):
+		return os.path.normpath(p)
+	return os.path.normpath(os.path.join(_PACKAGE_DIR, p))
+
+
+_FIREBASE_KEY_PATH = _resolve_service_account_path()
+if not os.path.isfile(_FIREBASE_KEY_PATH):
+	print(
+		"[firebase] ERROR: Service account JSON not found at:\n"
+		f"  {_FIREBASE_KEY_PATH}\n"
+		"Set FIREBASE_SERVICE_ACCOUNT_JSON in .env to an absolute path, or a path relative to the\n"
+		f"  game project folder: {_PACKAGE_DIR}\n"
+		"(Relative paths are not read from the shell's current working directory.)"
+	)
 cred = credentials.Certificate(_FIREBASE_KEY_PATH)
+print(f"[firebase] Service account file: {_FIREBASE_KEY_PATH}")
 
 
 def _service_account_project_id() -> str | None:
@@ -264,7 +288,7 @@ def sync_user_profile_to_firestore(uid: str, email: str, display_name: str, is_s
 		return fallback, warn
 
 
-def submit_score(level_name, player_name, time_seconds, deaths):
+def submit_score(level_name, player_name, time_seconds, deaths, source=None):
 	"""Append one row under Realtime Database `leaderboards/<level>/` (not Firestore).
 
 	Returns (ok, err_message). err_message is None on success.
@@ -285,6 +309,8 @@ def submit_score(level_name, player_name, time_seconds, deaths):
 			"deaths": int(deaths),
 			"ts": time.time(),
 		}
+		if source:
+			payload["source"] = str(source)[:32]
 		u = game_state.current_user
 		if u and u.get("uid"):
 			payload["uid"] = str(u["uid"])
@@ -292,7 +318,8 @@ def submit_score(level_name, player_name, time_seconds, deaths):
 		key = getattr(child, "key", None) or "?"
 		print(
 			f"[leaderboard] OK wrote RTDB {ref.path}/{key} "
-			f"player={payload['player']} time={payload['time']}s deaths={payload['deaths']}"
+			f"player={payload['player']} time={payload['time']}s deaths={payload['deaths']} "
+			f"source={payload.get('source', '-')}"
 		)
 		return True, None
 	except Exception as e:
@@ -300,7 +327,7 @@ def submit_score(level_name, player_name, time_seconds, deaths):
 		return False, f"{type(e).__name__}: {e}"
 
 
-def get_top_scores(level_name, limit=5):
+def get_top_scores(level_name, limit=40):
 	ref = _rtdb_leaderboard_ref(level_name)
 	if ref is None:
 		return []
