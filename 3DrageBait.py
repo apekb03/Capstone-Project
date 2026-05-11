@@ -13,6 +13,7 @@ import time
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from firebase_admin import exceptions as fb_exceptions
 
 from bleak import BleakClient
 HR_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
@@ -27,10 +28,16 @@ import math
 pygame.init()
 pygame.font.init()
 
-cred = credentials.Certificate("firebase_key.json")
-firebase_admin.initialize_app(cred)
-
-db = firestore.client()
+db = None
+if os.path.isfile("firebase_key.json"):
+	try:
+		cred = credentials.Certificate("firebase_key.json")
+		firebase_admin.initialize_app(cred)
+		db = firestore.client()
+	except Exception as e:
+		print(f"Firebase init failed: {e}")
+else:
+	print("firebase_key.json not found — leaderboard disabled.")
 
 inputMode = None
 trainingMode = False
@@ -360,6 +367,8 @@ receiver = MultiInputReceiver(pulsoid_token = PULSOID_TOKEN, ble_address="F7:0F:
 receiver.start()
 #=================================================================
 def submit_score(level_name, player_name, time_seconds, deaths):
+	if db is None:
+		return
 	try:
 		db.collection("leaderboards").add({
 			"level": level_name,
@@ -372,6 +381,8 @@ def submit_score(level_name, player_name, time_seconds, deaths):
 		print("Firebase submit error:", e)
 
 def get_top_scores(level_name, limit=5):
+	if db is None:
+		return []
 	try:
 		query = (
 			db.collection("leaderboards")
@@ -388,7 +399,7 @@ def get_top_scores(level_name, limit=5):
 		return scores
 	except Exception as e:
 		print("Leaderboard fetch error:", e)
-		return[]
+		return []
 #================================================================
 #.obj loader to import 3D models
 # If you are trying to import a model you need to go to each lvls __init__ and add ->
@@ -892,56 +903,79 @@ class Enemy:
 
 #===================================================================
 class LevelSelection:
-	def __init__(self):
-		self.button_width = 250
-		self.button_height = 50
-		self.button_spacing = 60
+	_LEVELS = [
+		("Level 1", "level1", "Platform jumps  ·  Spike traps"),
+		("Level 2", "level2", "Moving platforms  ·  Greater heights"),
+		("Level 3  [WIP]", "level3", "Enemies  ·  Grapple hook  ·  Boss?"),
+	]
+	_BW, _BH, _BGAP = 480, 80, 20
 
-		lvl1_y = 200
-		lvl2_y = lvl1_y + self.button_spacing
-		lvl3_y = lvl2_y + self.button_spacing
-		
-		#level 1 button
-		self.LVL1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL1_RECT.center = (SCREEN_WIDTH// 2, lvl1_y)
-		#level 2 button
-		self.LVL2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL2_RECT.center = (SCREEN_WIDTH//2, lvl2_y)
-		#level 3 button
-		self.LVL3_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LVL3_RECT.center = (SCREEN_WIDTH//2, lvl3_y)
+	def __init__(self):
+		pygame.mouse.set_visible(True)
+		pygame.event.set_grab(False)
+		self._bg = _MenuBG(55)
+		self._ht = [0.0] * len(self._LEVELS)
+		cx = SCREEN_WIDTH // 2
+		base_y = 420
+		self._rects = []
+		for i in range(len(self._LEVELS)):
+			r = pygame.Rect(0, 0, self._BW, self._BH)
+			r.center = (cx, base_y + i * (self._BH + self._BGAP))
+			self._rects.append(r)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				return MainMenu()
 			if event.type == MOUSEBUTTONDOWN and event.button == 1:
-				if self.LVL1_RECT.collidepoint(event.pos):
-					return ("start", "level1")
-				if self.LVL2_RECT.collidepoint(event.pos):
-					return ("start", "level2")
-				if self.LVL3_RECT.collidepoint(event.pos):
-					return ("start", "level3")
+				for i, rect in enumerate(self._rects):
+					if rect.collidepoint(event.pos):
+						return ("start", self._LEVELS[i][1])
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		for i, rect in enumerate(self._rects):
+			t = 1.0 if rect.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
+
 	def draw(self):
-		#Clears the screen
-		glClearColor(0.2, 0.2, 0.2, 1)
+		glClearColor(*C_BG, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-		#Calls the 2D OpenGl Render projection
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
 
-		glColor3f(0.4, 0.4, 0.4)
+		cx = SCREEN_WIDTH // 2
+		_blit_centered(HEADING_FONT, "SELECT LEVEL", C_RED_BRIGHT, cx, 140)
 
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL1_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL2_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LVL3_RECT)
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 240, 215); glVertex2f(cx + 240, 215)
+		glEnd()
+		_blit_centered(LABEL_FONT, "Choose your challenge", C_TEXT_DIM, cx, 230)
+		_blit_centered(SMALL_FONT, "ESC  ←  Main Menu", C_TEXT_DIM, cx, SCREEN_HEIGHT - 30)
 
-		draw_text("Level 1", self.LVL1_RECT.centerx - 40, self.LVL1_RECT.centery - 15)
-		draw_text("Level 2", self.LVL2_RECT.centerx - 40, self.LVL2_RECT.centery - 15)
-		draw_text("Level 3(WIP)", self.LVL3_RECT.centerx - 40, self.LVL3_RECT.centery - 15)
-
+		for i, (label, _, desc) in enumerate(self._LEVELS):
+			rect = self._rects[i]
+			ht = self._ht[i]
+			_ui_button(rect, "", ht)
+			# Level number badge
+			badge_w = 50
+			badge_col = _lerp_color(C_RED_DIM, C_RED_BRIGHT, ht)
+			_draw_gl_rect(rect.left + 3, rect.top + 3,
+			              badge_w, rect.height - 6,
+			              badge_col[0]/255, badge_col[1]/255, badge_col[2]/255, 0.25)
+			_blit_centered(HEADING_FONT, str(i + 1),
+			               _lerp_color((160, 60, 60), C_WHITE, ht),
+			               rect.left + 28, rect.top + 14)
+			# Label + description
+			_blit_left(MENU_FONT,  label, _lerp_color((160, 155, 165), C_WHITE, ht),
+			           rect.left + 70, rect.top + 10)
+			_blit_left(SMALL_FONT, desc,  C_TEXT_DIM, rect.left + 70, rect.top + 50)
 
 		end_2d()
 #=======================================================================================
@@ -1567,79 +1601,281 @@ class LvlThree():
 		end_2d()
 
 #========================================================================================
+# ── Shared UI system ────────────────────────────────────────────────────────────────
+TITLE_FONT    = pygame.font.Font(None, 110)
+HEADING_FONT  = pygame.font.Font(None, 72)
+MENU_FONT     = pygame.font.Font(None, 48)
+LABEL_FONT    = pygame.font.Font(None, 34)
+SMALL_FONT    = pygame.font.Font(None, 26)
+
+# Palette
+C_BG         = (0.03, 0.03, 0.05)   # near-black navy
+C_PANEL      = (8,  10,  18)         # dark navy panel
+C_RED        = (220, 40,  40)
+C_RED_DIM    = (120, 20,  20)
+C_RED_BRIGHT = (255, 80,  80)
+C_ACCENT     = (255, 200, 60)        # gold accent for ranks/labels
+C_TEXT       = (210, 210, 220)
+C_TEXT_DIM   = (100, 105, 120)
+C_WHITE      = (255, 255, 255)
+
+def _lerp(a, b, t):
+	return a + (b - a) * t
+
+def _lerp_color(c1, c2, t):
+	return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+
+def _draw_gl_rect(x, y, w, h, r, g, b, a=1.0):
+	glColor4f(r, g, b, a)
+	glBegin(GL_QUADS)
+	glVertex2f(x,     y)
+	glVertex2f(x + w, y)
+	glVertex2f(x + w, y + h)
+	glVertex2f(x,     y + h)
+	glEnd()
+
+def _draw_gl_border(x, y, w, h, r, g, b, a=1.0, lw=1.0):
+	glColor4f(r, g, b, a)
+	glLineWidth(lw)
+	glBegin(GL_LINE_LOOP)
+	glVertex2f(x,     y)
+	glVertex2f(x + w, y)
+	glVertex2f(x + w, y + h)
+	glVertex2f(x,     y + h)
+	glEnd()
+	glLineWidth(1.0)
+
+def draw_text_surface(surface, x, y):
+	# y is screen-space top-left (y=0 is top). glDrawPixels draws upward from raster pos,
+	# so we place raster at the bottom edge (y + h) and flip the surface vertically.
+	flipped = pygame.transform.flip(surface, False, True)
+	text_data = pygame.image.tostring(flipped, "RGBA", False)
+	sh = surface.get_height()
+	glRasterPos2f(x, y + sh)
+	glDrawPixels(surface.get_width(), sh, GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
+# All _blit helpers take screen-space y (y=0 is top of screen).
+def _blit_centered(font, text, color, cx, y, max_alpha=255):
+	surf = font.render(text, True, color)
+	if max_alpha < 255:
+		surf.set_alpha(max_alpha)
+	sw, sh = surf.get_size()
+	draw_text_surface(surf, cx - sw // 2, y)
+
+def _blit_left(font, text, color, x, y):
+	surf = font.render(text, True, color)
+	draw_text_surface(surf, x, y)
+
+def _blit_right(font, text, color, right_x, y):
+	surf = font.render(text, True, color)
+	sw, sh = surf.get_size()
+	draw_text_surface(surf, right_x - sw, y)
+
+# Shared animated background: dark navy + slow red grid + drifting particles
+class _MenuBG:
+	def __init__(self, n_particles=60):
+		self._p = [self._new() for _ in range(n_particles)]
+		self._time = 0.0
+
+	def _new(self):
+		return {
+			"x": random.uniform(0, SCREEN_WIDTH),
+			"y": random.uniform(0, SCREEN_HEIGHT),
+			"vy": random.uniform(8, 35),
+			"alpha": random.uniform(0.04, 0.18),
+			"size": random.uniform(1, 2.5),
+		}
+
+	def update(self, dt):
+		self._time += dt
+		for p in self._p:
+			p["y"] += p["vy"] * dt
+			if p["y"] > SCREEN_HEIGHT + 4:
+				p["y"] = -4
+				p["x"] = random.uniform(0, SCREEN_WIDTH)
+
+	def draw(self):
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+		# Base
+		_draw_gl_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, *C_BG)
+
+		# Vignette
+		for i in range(10):
+			t = i / 10
+			mx, my = SCREEN_WIDTH * 0.5, SCREEN_HEIGHT * 0.5
+			rx = SCREEN_WIDTH  * (0.05 + t * 0.5)
+			ry = SCREEN_HEIGHT * (0.05 + t * 0.5)
+			alpha = (1 - t) * 0.35
+			_draw_gl_rect(mx - rx, my - ry, rx * 2, ry * 2,
+			              0.28, 0.0, 0.02, alpha)
+
+		# Animated grid
+		t = self._time
+		grid_alpha = 0.06
+		glColor4f(0.6, 0.05, 0.05, grid_alpha)
+		glLineWidth(1.0)
+		step = 80
+		for gx in range(0, SCREEN_WIDTH + step, step):
+			glBegin(GL_LINES)
+			glVertex2f(gx, 0)
+			glVertex2f(gx, SCREEN_HEIGHT)
+			glEnd()
+		for gy in range(0, SCREEN_HEIGHT + step, step):
+			glBegin(GL_LINES)
+			glVertex2f(0, gy)
+			glVertex2f(SCREEN_WIDTH, gy)
+			glEnd()
+
+		# Horizontal sweep line
+		sweep_y = (SCREEN_HEIGHT * ((t * 0.12) % 1.0))
+		for i in range(3):
+			a = 0.18 - i * 0.06
+			glColor4f(0.8, 0.1, 0.1, a)
+			glBegin(GL_LINES)
+			glVertex2f(0, sweep_y + i * 2)
+			glVertex2f(SCREEN_WIDTH, sweep_y + i * 2)
+			glEnd()
+
+		# Particles
+		glPointSize(2.0)
+		glBegin(GL_POINTS)
+		for p in self._p:
+			glColor4f(1.0, 0.2, 0.2, p["alpha"])
+			glVertex2f(p["x"], p["y"])
+		glEnd()
+		glPointSize(1.0)
+
+# Shared button renderer — used by all menus
+def _ui_button(rect, label, hover_t, font=None):
+	if font is None:
+		font = MENU_FONT
+	x, y, w, h = rect.left, rect.top, rect.width, rect.height
+
+	# Glass panel bg
+	bg = _lerp_color(C_PANEL, (25, 6, 6), hover_t)
+	_draw_gl_rect(x, y, w, h, bg[0]/255, bg[1]/255, bg[2]/255, 0.92)
+
+	# Inner highlight strip at top
+	_draw_gl_rect(x + 2, y + 1, w - 4, 2,
+	              1.0, 1.0, 1.0, 0.04 + hover_t * 0.08)
+
+	# Animated left bar
+	bar_h = int(h * _lerp(0.35, 1.0, hover_t))
+	bar_y = y + (h - bar_h) // 2
+	bar_c = _lerp_color(C_RED_DIM, C_RED_BRIGHT, hover_t)
+	_draw_gl_rect(x, bar_y, 3, bar_h,
+	              bar_c[0]/255, bar_c[1]/255, bar_c[2]/255)
+
+	# Border
+	bc = _lerp_color((45, 20, 20), (200, 50, 50), hover_t)
+	_draw_gl_border(x, y, w, h, bc[0]/255, bc[1]/255, bc[2]/255,
+	                0.7 + hover_t * 0.3, 1.0 + hover_t)
+
+	# Hover fill flash
+	if hover_t > 0.01:
+		_draw_gl_rect(x + 3, y + 1, w - 3, h - 2,
+		              0.9, 0.15, 0.15, hover_t * 0.07)
+
+	# Label
+	tc = _lerp_color((160, 155, 165), C_WHITE, hover_t)
+	lsurf = font.render(label, True, tc)
+	lw, lh = lsurf.get_size()
+	sc = 1.0 + hover_t * 0.03
+	if sc > 1.005:
+		lsurf = pygame.transform.smoothscale(lsurf,
+		                                      (int(lw * sc), int(lh * sc)))
+		lw, lh = lsurf.get_size()
+	draw_text_surface(lsurf,
+	                  rect.centerx - lw // 2,
+	                  rect.centery - lh // 2)
+
 class MainMenu:
+	_BW, _BH, _BGAP = 360, 64, 16
+	_BUTTONS = [("Start Game", "start"), ("Level Select", "lvlSelection"), ("Quit", "quit")]
+
 	def __init__(self):
 		self.next_state = None
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
-		#Button Variables
-		self.button_width = 250
-		self.button_height = 60
-		self.button_spacing = 20
-
-		self.TITLE = FONT.render("Heart Beat Devil", True, WHITE)
-		self.TITLE_RECT = self.TITLE.get_rect(center=(SCREEN_WIDTH//2, 120))
-
-		start_y = 235
-		level_y = start_y + self.button_spacing + self.button_height #in order to get the button spacing and postion did this
-		quit_y = level_y + self.button_spacing + self.button_height   #to take our starting variable and then add the 
-							 #spacing variable to get the next y coordinate/postion
-		#start button
-		self.START_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.START_RECT.center = (SCREEN_WIDTH//2, start_y)
-		#level selection button
-		self.LEVEL_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.LEVEL_RECT.center = (SCREEN_WIDTH//2, level_y)
-		#quit button
-		self.QUIT_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.QUIT_RECT.center = (SCREEN_WIDTH//2, quit_y)
-		
-		#pre rendering
-		self.START_TEXT = FONT.render("Start", True, WHITE)
-		self.START_TEXT_RECT = self.START_TEXT.get_rect(center = self.START_RECT.center)
-
-		self.LEVEL_TEXT = FONT.render("Level Selection" , True, WHITE)
-		self.LEVEL_TEXT_RECT = self.LEVEL_TEXT.get_rect(center = self.LEVEL_RECT.center)
-
-		self.QUIT_TEXT = FONT.render("Quit", True, WHITE)
-		self.QUIT_TEXT_RECT = self.QUIT_TEXT.get_rect(center = self.QUIT_RECT.center)
+		self._bg = _MenuBG(70)
+		self._ht = [0.0] * len(self._BUTTONS)
+		cx = SCREEN_WIDTH // 2
+		base_y = 520
+		self._rects = []
+		for i in range(len(self._BUTTONS)):
+			r = pygame.Rect(0, 0, self._BW, self._BH)
+			r.center = (cx, base_y + i * (self._BH + self._BGAP))
+			self._rects.append(r)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				return "quit"
 			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-				mousePos = event.pos
-
-				if self.START_RECT.collidepoint(mousePos):
-					return "start"
-				elif self.LEVEL_RECT.collidepoint(mousePos):
-					return "lvlSelection"
-				elif self.QUIT_RECT.collidepoint(mousePos):
-					return "quit"
-
+				for i, rect in enumerate(self._rects):
+					if rect.collidepoint(event.pos):
+						return self._BUTTONS[i][1]
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		for i, rect in enumerate(self._rects):
+			t = 1.0 if rect.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0, 0, 0, 1)
+		ticks = pygame.time.get_ticks()
+		pulse = (math.sin(ticks * 0.0018) + 1) * 0.5
+
+		glClearColor(*C_BG, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
 		begin_2d()
-		#draws the button boxes
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.START_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.LEVEL_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-		#draws our button text
-		draw_text("Start", self.START_RECT.centerx - 40, self.START_RECT.centery -15)
-		draw_text("Level Selection", self.LEVEL_RECT.centerx - 90, self.LEVEL_RECT.centery - 15)
-		draw_text("Quit", self.QUIT_RECT.centerx - 30, self.QUIT_RECT.centery - 15)
+		self._bg.draw()
 
-		#draws title
-		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 100, 120)
+		cx = SCREEN_WIDTH // 2
+
+		# ── Title glow layers ────────────────────────────────────────
+		for off, sz, ga in [(8, 118, 30), (4, 112, 50)]:
+			g = pygame.font.Font(None, sz).render("HEART BEAT DEVIL", True, C_RED)
+			g.set_alpha(int(ga + pulse * 22))
+			gw, gh = g.get_size()
+			draw_text_surface(g, cx - gw // 2, 160 - off)
+
+		tc = _lerp_color((215, 30, 30), (255, 95, 95), pulse)
+		_blit_centered(TITLE_FONT, "HEART BEAT DEVIL", tc, cx, 155)
+
+		# ── Divider + tagline ────────────────────────────────────────
+		div_y = 285
+		glColor4f(0.65, 0.10, 0.10, 0.55)
+		glLineWidth(1.0)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 280, div_y); glVertex2f(cx + 280, div_y)
+		glEnd()
+
+		ds = 5
+		glColor4f(0.9, 0.2, 0.2, 0.85)
+		glBegin(GL_QUADS)
+		glVertex2f(cx,      div_y - ds)
+		glVertex2f(cx + ds, div_y)
+		glVertex2f(cx,      div_y + ds)
+		glVertex2f(cx - ds, div_y)
+		glEnd()
+
+		_blit_centered(LABEL_FONT, "FEEL THE BEAT  ·  SURVIVE THE DEVIL", C_TEXT_DIM, cx, 300)
+
+		# ── Buttons ──────────────────────────────────────────────────
+		for i, (label, _) in enumerate(self._BUTTONS):
+			_ui_button(self._rects[i], label, self._ht[i])
+
+		_blit_centered(SMALL_FONT, "ESC to quit", C_TEXT_DIM, cx, SCREEN_HEIGHT - 30)
+		_blit_right(SMALL_FONT, "v0.5", C_TEXT_DIM, SCREEN_WIDTH - 24, SCREEN_HEIGHT - 30)
 
 		end_2d()
 #================================================================
@@ -1649,136 +1885,131 @@ class LvlComplete:
 		self.finish_time = finish_time
 		self.deaths = deaths
 		self.next_level = next_level
-
 		self.next_state = None
-
+		self._cont_ht = 0.0
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
-		self.player_name = "Player"
-
 		self.scores = get_top_scores(level_name)
-
-		self.button_width = 300
-		self.button_height = 60
-		self.spacing = 20
-
-		cx = SCREEN_WIDTH //2
-		start_y = SCREEN_HEIGHT //2
-
-		self.CONTINUE_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.CONTINUE_RECT.center = (cx, start_y)
+		self.CONTINUE_RECT = pygame.Rect(0, 0, 300, 58)
+		self.CONTINUE_RECT.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
-
 			if event.type == pygame.MOUSEBUTTONDOWN:
 				if self.CONTINUE_RECT.collidepoint(event.pos):
 					self.next_state = self.next_level
 
 	def update(self, dt):
-		pass
+		t = 1.0 if self.CONTINUE_RECT.collidepoint(pygame.mouse.get_pos()) else 0.0
+		self._cont_ht += (t - self._cont_ht) * min(1.0, dt * 12)
 
 	def draw(self):
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-		glColor4f(0, 0, 0, 0.7)
-		glBegin(GL_QUADS)
-		glVertex2f(0, 0)
-		glVertex2f(SCREEN_WIDTH, 0)
-		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
-		glVertex2f(0, SCREEN_HEIGHT)
+		# Dark overlay over game world
+		_draw_gl_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0.78)
+
+		cx = SCREEN_WIDTH // 2
+		cy = SCREEN_HEIGHT // 2 - 140
+
+		# Floating panel
+		pw, ph = 500, 320
+		px, py = cx - pw // 2, cy
+		_draw_gl_rect(px, py, pw, ph, C_PANEL[0]/255, C_PANEL[1]/255, C_PANEL[2]/255, 0.95)
+		_draw_gl_border(px, py, pw, ph, 0.6, 0.1, 0.1, 0.6)
+		_draw_gl_rect(px, py, pw, 3, 0.8, 0.15, 0.15, 1.0)
+
+		_blit_centered(HEADING_FONT, "LEVEL COMPLETE", C_RED_BRIGHT, cx, cy + 30)
+
+		glColor4f(0.5, 0.08, 0.08, 0.35)
+		glBegin(GL_LINES)
+		glVertex2f(px + 30, cy + 90); glVertex2f(px + pw - 30, cy + 90)
 		glEnd()
 
-		draw_text(f"{self.level_name} Level Complete!", SCREEN_WIDTH//2 - 180, 100)
-		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 140, 180)
-		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 140, 220)
-		draw_text("Leaderboard", SCREEN_WIDTH//2 -100, 320)
+		col_l = cx - 100
+		col_r = cx + 100
+		_blit_centered(SMALL_FONT, "TIME",   C_TEXT_DIM, col_l, cy + 120)
+		_blit_centered(MENU_FONT,  f"{self.finish_time:.2f}s", C_ACCENT, col_l, cy + 155)
+		_blit_centered(SMALL_FONT, "DEATHS", C_TEXT_DIM, col_r, cy + 120)
+		_blit_centered(MENU_FONT,  str(self.deaths), C_RED_BRIGHT, col_r, cy + 155)
 
-		y = 320
-
-		for i, score in enumerate(self.scores):
-
-			line = (
-				f"{i+1}. "
-				f"{score['player']} "
-				f"{score['time']:.2f}s "
-				f"Deaths:{score['deaths']}"
-			)
-
-			draw_text(line, SCREEN_WIDTH//2 - 250, y)
-
-			y += 50
-
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.CONTINUE_RECT)
-
-		draw_text("Continue", self.CONTINUE_RECT.centerx - 70, self.CONTINUE_RECT.centery - 15)
-
-
+		_ui_button(self.CONTINUE_RECT, "Continue", self._cont_ht)
 		end_2d()
 
 #================================================================
 class PauseMenu:
+	_BW, _BH, _BGAP = 320, 58, 16
+	_BUTTONS = [("Resume", None), ("Main Menu", "menu"), ("Quit Game", "quit")]
+
 	def __init__(self, previous_state):
 		self.previous_state = previous_state
-
-		self.button_width = 300
-		self.button_height = 60
-		self.spacing = 20
-
-		cx = SCREEN_WIDTH //2
-		start_y = SCREEN_HEIGHT //2
-
-		self.RESUME_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.RESUME_RECT.center = (cx, start_y)
-
-		self.MENU_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MENU_RECT.center = (cx, start_y + self.button_height + self.spacing)
-
-		self.QUIT_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.QUIT_RECT.center = (cx, start_y + 2*(self.button_height + self.spacing))
+		self._ht = [0.0] * len(self._BUTTONS)
+		cx = SCREEN_WIDTH // 2
+		base_y = SCREEN_HEIGHT // 2 + 30
+		self._rects = []
+		for i in range(len(self._BUTTONS)):
+			r = pygame.Rect(0, 0, self._BW, self._BH)
+			r.center = (cx, base_y + i * (self._BH + self._BGAP))
+			self._rects.append(r)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
 				return self.previous_state
-
 			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-				if self.RESUME_RECT.collidepoint(event.pos):
+				if self._rects[0].collidepoint(event.pos):
 					return self.previous_state
-
-				if self.MENU_RECT.collidepoint(event.pos):
+				if self._rects[1].collidepoint(event.pos):
 					return MainMenu()
-
-				if self.QUIT_RECT.collidepoint(event.pos):
+				if self._rects[2].collidepoint(event.pos):
 					return "quit"
+
 	def update(self, dt):
-		pass
+		mp = pygame.mouse.get_pos()
+		for i, rect in enumerate(self._rects):
+			t = 1.0 if rect.collidepoint(mp) else 0.0
+			self._ht[i] += (t - self._ht[i]) * min(1.0, dt * 12)
 
 	def draw(self):
 		self.previous_state.draw()
-
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-		glColor4f(0, 0, 0, 0.7)
-		glBegin(GL_QUADS)
-		glVertex2f(0, 0)
-		glVertex2f(SCREEN_WIDTH, 0)
-		glVertex2f(SCREEN_WIDTH, SCREEN_HEIGHT)
-		glVertex2f(0, SCREEN_HEIGHT)
+		# Full-screen blur overlay
+		_draw_gl_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0.72)
+
+		# Thin red horizontal rule across middle
+		cy = SCREEN_HEIGHT // 2 - 80
+		glColor4f(0.7, 0.1, 0.1, 0.4)
+		glLineWidth(1.0)
+		glBegin(GL_LINES)
+		glVertex2f(0, cy); glVertex2f(SCREEN_WIDTH, cy)
 		glEnd()
 
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.RESUME_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.MENU_RECT)
-		pygame.draw.rect(SCREEN, (100, 100, 100), self.QUIT_RECT)
+		cx = SCREEN_WIDTH // 2
 
-		draw_text("Resume Game", self.RESUME_RECT.centerx - 100, self.RESUME_RECT.centery - 15)
-		draw_text("Main Menu", self.MENU_RECT.centerx - 80, self.MENU_RECT.centery - 15)
-		draw_text("Quit Game", self.QUIT_RECT.centerx - 72, self.QUIT_RECT.centery - 15)
+		# Panel behind content
+		pw, ph = 420, 340
+		px, py = cx - pw // 2, cy - 30
+		_draw_gl_rect(px, py, pw, ph, 0.04, 0.04, 0.08, 0.88)
+		_draw_gl_border(px, py, pw, ph, 0.6, 0.1, 0.1, 0.5, 1.0)
 
-		draw_text("Paused", SCREEN_WIDTH//2 - 60, SCREEN_HEIGHT//2 - 140)
+		# "PAUSED" heading
+		_blit_centered(HEADING_FONT, "PAUSED", C_RED_BRIGHT, cx, cy - 20)
+
+		# Small rule under heading
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 100, cy + 50); glVertex2f(cx + 100, cy + 50)
+		glEnd()
+
+		for i, (label, _) in enumerate(self._BUTTONS):
+			_ui_button(self._rects[i], label, self._ht[i])
 
 		end_2d()
 
@@ -1791,241 +2022,278 @@ class NameEntryScreen:
 		self.next_level = next_level
 		self.next_state = None
 		self.player_name = ""
-
+		self._bg = _MenuBG(40)
+		self._submit_ht = 0.0
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
-		self.SUBMIT_RECT = pygame.Rect(SCREEN_WIDTH//2 - 150, 550, 300, 60)
+		self.SUBMIT_RECT = pygame.Rect(0, 0, 300, 58)
+		self.SUBMIT_RECT.center = (SCREEN_WIDTH // 2, 660)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
-
 			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					return MainMenu()
 				if event.key == pygame.K_BACKSPACE:
 					self.player_name = self.player_name[:-1]
 				elif event.key == pygame.K_RETURN:
-					if len(self.player_name.strip()) > 0:
-						return self.submit_player_score()
-
+					if self.player_name.strip():
+						return self._submit()
 				else:
-					if len(self.player_name) < 16:
-						if event.unicode.isprintable():
-							self.player_name += event.unicode
-
+					if len(self.player_name) < 16 and event.unicode.isprintable():
+						self.player_name += event.unicode
 			if event.type == pygame.MOUSEBUTTONDOWN:
-				if self.SUBMIT_RECT.collidepoint(event.pos):
-					if len(self.player_name.strip()) > 0:
-						return self.submit_player_score()
+				if self.SUBMIT_RECT.collidepoint(event.pos) and self.player_name.strip():
+					return self._submit()
 
-	def submit_player_score(self):
-		submit_score(
-			self.level_name,
-			self.player_name,
-			self.finish_time,
-			self.deaths
-		)
-
+	def _submit(self):
+		submit_score(self.level_name, self.player_name, self.finish_time, self.deaths)
 		return LeaderboardScreen(self.level_name, self.next_level)
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		t = 1.0 if self.SUBMIT_RECT.collidepoint(pygame.mouse.get_pos()) else 0.0
+		self._submit_ht += (t - self._submit_ht) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0, 0, 0, 1)
+		glClearColor(*C_BG, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
 
-		draw_text("Level comlpete!", SCREEN_WIDTH//2 - 100, 100)
-		draw_text(f"Time: {self.finish_time:.2f}s", SCREEN_WIDTH//2 - 80, 200)
-		draw_text(f"Deaths: {self.deaths}", SCREEN_WIDTH//2 - 80, 250)
-		draw_text("Enter Your Name", SCREEN_WIDTH//2 - 100, 350)
+		cx = SCREEN_WIDTH // 2
 
-		pygame.draw.rect(SCREEN, (60,60,60), (SCREEN_WIDTH//2 - 200, 400, 400, 70))
+		# Panel
+		pw, ph = 560, 420
+		px, py = cx - pw // 2, 220
+		_draw_gl_rect(px, py, pw, ph, C_PANEL[0]/255, C_PANEL[1]/255, C_PANEL[2]/255, 0.92)
+		_draw_gl_border(px, py, pw, ph, 0.55, 0.08, 0.08, 0.6)
+		# Top accent bar on panel
+		_draw_gl_rect(px, py, pw, 3, 0.8, 0.15, 0.15, 0.9)
 
-		draw_text(self.player_name, SCREEN_WIDTH//2 - 80, 440)
+		_blit_centered(HEADING_FONT, "LEVEL COMPLETE", C_RED_BRIGHT, cx, 245)
 
-		pygame.draw.rect(SCREEN, (200, 200, 200), self.SUBMIT_RECT)
+		# Stats row
+		glColor4f(0.5, 0.08, 0.08, 0.35)
+		glBegin(GL_LINES)
+		glVertex2f(px + 30, 335); glVertex2f(px + pw - 30, 335)
+		glEnd()
 
-		draw_text("Submit Score", self.SUBMIT_RECT.centerx - 95, self.SUBMIT_RECT.centery - 16)
+		col_l = cx - 120
+		col_r = cx + 120
+		_blit_centered(SMALL_FONT, "TIME", C_TEXT_DIM, col_l, 360)
+		_blit_centered(MENU_FONT,  f"{self.finish_time:.2f}s", C_ACCENT, col_l, 395)
+		_blit_centered(SMALL_FONT, "DEATHS", C_TEXT_DIM, col_r, 360)
+		_blit_centered(MENU_FONT,  str(self.deaths), C_RED_BRIGHT, col_r, 395)
 
+		glColor4f(0.5, 0.08, 0.08, 0.35)
+		glBegin(GL_LINES)
+		glVertex2f(px + 30, 450); glVertex2f(px + pw - 30, 450)
+		glEnd()
+
+		_blit_centered(LABEL_FONT, "ENTER YOUR NAME", C_TEXT_DIM, cx, 475)
+
+		# Input box
+		iw, ih = 380, 56
+		ix, iy = cx - iw // 2, 510
+		_draw_gl_rect(ix, iy, iw, ih, 0.06, 0.06, 0.10, 1.0)
+		_draw_gl_border(ix, iy, iw, ih, 0.6, 0.12, 0.12, 0.7)
+		# cursor blink
+		show_cursor = (pygame.time.get_ticks() // 530) % 2 == 0
+		display_name = self.player_name + ("|" if show_cursor else " ")
+		_blit_centered(MENU_FONT, display_name, C_WHITE, cx, iy + 36)
+
+		_ui_button(self.SUBMIT_RECT, "Submit Score", self._submit_ht)
 		end_2d()
 #========================================================
 class LeaderboardScreen:
+	_RANK_COLORS = [(255, 200, 40), (180, 180, 195), (200, 130, 60)]
+
 	def __init__(self, level_name, next_level):
 		self.level_name = level_name
 		self.next_level = next_level
 		self.next_state = None
-
+		self._bg = _MenuBG(45)
+		self._cont_ht = 0.0
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
 		self.scores = get_top_scores(level_name)
-
-		self.CONTINUE_RECT = pygame.Rect(SCREEN_WIDTH//2 -150, 850, 300, 60)
+		self.CONTINUE_RECT = pygame.Rect(0, 0, 300, 58)
+		self.CONTINUE_RECT.center = (SCREEN_WIDTH // 2, 920)
 
 	def handleEvents(self, events):
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
-
+			if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+				return MainMenu()
 			if event.type == pygame.MOUSEBUTTONDOWN:
 				if self.CONTINUE_RECT.collidepoint(event.pos):
 					return self.next_level
 
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		t = 1.0 if self.CONTINUE_RECT.collidepoint(pygame.mouse.get_pos()) else 0.0
+		self._cont_ht += (t - self._cont_ht) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0, 0, 0, 1)
+		glClearColor(*C_BG, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		self._bg.draw()
 
-		draw_text(f"{self.level_name} Leaderboard", SCREEN_WIDTH//2 - 110, 100)
-		y = 220
+		cx = SCREEN_WIDTH // 2
 
-		for i, score in enumerate(self.scores):
+		_blit_centered(HEADING_FONT, "LEADERBOARD", C_RED_BRIGHT, cx, 90)
+		_blit_centered(LABEL_FONT, self.level_name.upper(), C_TEXT_DIM, cx, 155)
 
-			line = (
-				f"{i+1}. "
-				f"{score['player']} "
-				f"{score['time']:.2f}s "
-				f"Deaths:{score['deaths']}"
-			)
+		# Divider
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 300, 175); glVertex2f(cx + 300, 175)
+		glEnd()
 
-			draw_text(line, SCREEN_WIDTH//2 - 130, y)
-			y += 60
+		if not self.scores:
+			_blit_centered(LABEL_FONT, "No scores yet. Be the first!", C_TEXT_DIM, cx, 320)
+		else:
+			# Column headers
+			_blit_left (SMALL_FONT, "RANK", C_TEXT_DIM, cx - 280, 210)
+			_blit_left (SMALL_FONT, "PLAYER",   C_TEXT_DIM, cx - 180, 210)
+			_blit_right(SMALL_FONT, "TIME",      C_TEXT_DIM, cx + 80,  210)
+			_blit_right(SMALL_FONT, "DEATHS",    C_TEXT_DIM, cx + 280, 210)
 
-		pygame.draw.rect(SCREEN, (200, 200, 200), self.CONTINUE_RECT)
-		draw_text("Continue", self.CONTINUE_RECT.centerx - 60, self.CONTINUE_RECT.centery - 30)
+			glColor4f(0.4, 0.08, 0.08, 0.3)
+			glBegin(GL_LINES)
+			glVertex2f(cx - 280, 230); glVertex2f(cx + 280, 230)
+			glEnd()
 
+			for i, score in enumerate(self.scores):
+				row_y_top = 240 + i * 70
+				row_y_mid = row_y_top + 38
+
+				# Row bg alternating
+				row_a = 0.06 if i % 2 == 0 else 0.0
+				_draw_gl_rect(cx - 285, row_y_top, 570, 62, 1, 1, 1, row_a)
+
+				rank_col = self._RANK_COLORS[i] if i < 3 else C_TEXT_DIM
+				_blit_left(MENU_FONT,  f"#{i+1}", rank_col, cx - 280, row_y_mid)
+				_blit_left(MENU_FONT,  score.get("player", "???"), C_TEXT, cx - 180, row_y_mid)
+				_blit_right(MENU_FONT, f"{score['time']:.2f}s", C_ACCENT, cx + 80,  row_y_mid)
+				_blit_right(LABEL_FONT,str(score['deaths']),     C_RED,    cx + 280, row_y_mid)
+
+		_ui_button(self.CONTINUE_RECT, "Continue", self._cont_ht)
 		end_2d()
 #=========================================================
 class ModeSelection:
+	_BW, _BH, _BGAP = 420, 90, 16
+
 	def __init__(self):
 		pygame.mouse.set_visible(True)
 		pygame.event.set_grab(False)
-
 		self.training_mode = False
 		self.next_state = None
 		self.target_level = "level1"
+		self._bg = _MenuBG(50)
+		self._ht = [0.0, 0.0, 0.0]
 
-		#Button Variable for selections
-		self.button_width = 350
-		self.button_height = 120
-		self.button_spacing = 20
-
-		cx = SCREEN_WIDTH//2
-
-		start_y = 280
-		mode2_y = start_y + self.button_height + self.button_spacing
-		train_y = mode2_y + self.button_height + self.button_spacing
-
-		self.MODE1_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE1_RECT.center = (cx, start_y)
-
-		self.MODE2_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.MODE2_RECT.center = (cx, mode2_y)
-
-		self.TRAIN_RECT = pygame.Rect(0, 0, self.button_width, self.button_height)
-		self.TRAIN_RECT.center = (cx, train_y)
-
-		self.TITLE = FONT.render("Heart Beat Devil", True, WHITE)
-		self.TITLE_RECT = self.TITLE.get_rect(center=(cx, 80))
-
-		self.SUBTITLE = FONT.render("Select input mode", True, (255, 0, 255))
-		self.SUBTITLE_RET = self.SUBTITLE.get_rect(center=(cx, 180))
-
-		self.MODE1_TEXT = FONT.render("1. Heart Rate (BPM)", True, WHITE)
-		self.MODE1_TEXT_RECT = self.MODE1_TEXT.get_rect(center = self.MODE1_RECT.center)
-
-		self.MODE2_TEXT = FONT.render("2. Facial Emotion", True, WHITE)
-		self.MODE2_TEXT_RECT = self.MODE2_TEXT.get_rect(center = self.MODE2_RECT.center)
+		cx = SCREEN_WIDTH // 2
+		base_y = 420
+		self.MODE1_RECT = pygame.Rect(0, 0, self._BW, self._BH)
+		self.MODE1_RECT.center = (cx, base_y)
+		self.MODE2_RECT = pygame.Rect(0, 0, self._BW, self._BH)
+		self.MODE2_RECT.center = (cx, base_y + self._BH + self._BGAP)
+		self.TRAIN_RECT = pygame.Rect(0, 0, self._BW, 52)
+		self.TRAIN_RECT.center = (cx, base_y + 2 * (self._BH + self._BGAP) + 24)
 
 	def handleEvents(self, events):
 		global inputMode, trainingMode
-
 		for event in events:
 			if event.type == pygame.QUIT:
 				return "quit"
-
 			if event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					return MainMenu()
 				if event.key == pygame.K_1:
 					inputMode = InputMode.HEART_RATE
 					trainingMode = self.training_mode
 					return self.target_level
-
 				if event.key == pygame.K_2:
 					inputMode = InputMode.EMOTION
 					trainingMode = self.training_mode
 					return self.target_level
-
 				if event.key == pygame.K_t:
 					self.training_mode = not self.training_mode
-
-			if event.type == pygame.MOUSEBUTTONDOWN and event.button ==  1:
-				mousePos = event.pos
-
-				if self.MODE1_RECT.collidepoint(mousePos):
+			if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+				mp = event.pos
+				if self.MODE1_RECT.collidepoint(mp):
 					inputMode = InputMode.HEART_RATE
 					trainingMode = self.training_mode
 					return self.target_level
-
-				elif self.MODE2_RECT.collidepoint(mousePos):
+				elif self.MODE2_RECT.collidepoint(mp):
 					inputMode = InputMode.EMOTION
 					trainingMode = self.training_mode
 					return self.target_level
-				elif self.TRAIN_RECT.collidepoint(mousePos):
+				elif self.TRAIN_RECT.collidepoint(mp):
 					self.training_mode = not self.training_mode
 
-		
 	def update(self, dt):
-		pass
+		self._bg.update(dt)
+		mp = pygame.mouse.get_pos()
+		self._ht[0] += ((1.0 if self.MODE1_RECT.collidepoint(mp) else 0.0) - self._ht[0]) * min(1.0, dt * 12)
+		self._ht[1] += ((1.0 if self.MODE2_RECT.collidepoint(mp) else 0.0) - self._ht[1]) * min(1.0, dt * 12)
+		self._ht[2] += ((1.0 if self.TRAIN_RECT.collidepoint(mp) else 0.0) - self._ht[2]) * min(1.0, dt * 12)
 
 	def draw(self):
-		glClearColor(0, 0, 0, 1)
+		glClearColor(*C_BG, 1)
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
 		begin_2d()
+		glEnable(GL_BLEND)
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-		mousePos = pygame.mouse.get_pos()
+		self._bg.draw()
+		cx = SCREEN_WIDTH // 2
 
-		#Hover coloring
-		color1 = (150, 220, 150)
-		color2 = (150, 150, 220)
+		_blit_centered(HEADING_FONT, "SELECT MODE", C_RED_BRIGHT, cx, 140)
 
-		if self.MODE1_RECT.collidepoint(mousePos):
-			color1 = (230, 255, 230)
+		# Divider
+		glColor4f(0.6, 0.1, 0.1, 0.4)
+		glBegin(GL_LINES)
+		glVertex2f(cx - 220, 215); glVertex2f(cx + 220, 215)
+		glEnd()
+		_blit_centered(LABEL_FONT, "Choose how your body controls the game", C_TEXT_DIM, cx, 230)
+		_blit_centered(SMALL_FONT, "ESC  ←  Main Menu", C_TEXT_DIM, cx, SCREEN_HEIGHT - 30)
 
-		if self.MODE2_RECT.collidepoint(mousePos):
-			color2 = (230, 230, 255)
+		# Mode 1 card
+		_ui_button(self.MODE1_RECT, "", self._ht[0])
+		_blit_centered(MENU_FONT,  "Heart Rate  [BPM]", C_TEXT, cx, self.MODE1_RECT.top + 12)
+		_blit_centered(SMALL_FONT, "Connect a heart-rate monitor  ·  press 1",
+		               C_TEXT_DIM, cx, self.MODE1_RECT.top + 52)
 
-		#Draws the buttons
-		pygame.draw.rect(SCREEN, (30, 40, 30), self.MODE1_RECT)
-		pygame.draw.rect(SCREEN, color1, self.MODE1_RECT, 2)
+		# Mode 2 card
+		_ui_button(self.MODE2_RECT, "", self._ht[1])
+		_blit_centered(MENU_FONT,  "Facial Emotion", C_TEXT, cx, self.MODE2_RECT.top + 12)
+		_blit_centered(SMALL_FONT, "Uses webcam emotion detection  ·  press 2",
+		               C_TEXT_DIM, cx, self.MODE2_RECT.top + 52)
 
-		pygame.draw.rect(SCREEN, (30, 30, 40), self.MODE2_RECT)
-		pygame.draw.rect(SCREEN, color2, self.MODE2_RECT, 2)
-
-		#training toggle colors
-		col_tr = (100, 255, 100) if self.training_mode else (100, 100, 100)
-		bg_tr = (20, 50, 20) if self.training_mode else (30, 30, 30)
-
-		pygame.draw.rect(SCREEN, bg_tr, self.TRAIN_RECT)
-		pygame.draw.rect(SCREEN, col_tr, self.TRAIN_RECT, 2)
-
-		#Draws the text
-		draw_text("1. Heart Rate (BPM)", self.MODE1_RECT.centerx - 120, self.MODE1_RECT.centery - 15)
-		draw_text("2. Facial Emotion", self.MODE2_RECT.centerx - 120, self.MODE2_RECT.centery - 15)
-
-		status = "ON" if self.training_mode else "OFF"
-		draw_text(f"Training Mode: {status}", self.TRAIN_RECT.centerx - 130, self.TRAIN_RECT.centery - 10)
-
-		draw_text("Heart Beat Devil", SCREEN_WIDTH//2 - 120, 80)
-		draw_text("Select Input Mode", SCREEN_WIDTH//2 - 110, 180)
+		# Training toggle
+		tr_on = self.training_mode
+		tr_bg = (10, 30, 10) if tr_on else C_PANEL
+		_draw_gl_rect(self.TRAIN_RECT.x, self.TRAIN_RECT.y,
+		              self.TRAIN_RECT.w, self.TRAIN_RECT.h,
+		              tr_bg[0]/255, tr_bg[1]/255, tr_bg[2]/255, 0.9)
+		tr_bc = (60, 200, 60) if tr_on else (60, 60, 60)
+		_draw_gl_border(self.TRAIN_RECT.x, self.TRAIN_RECT.y,
+		                self.TRAIN_RECT.w, self.TRAIN_RECT.h,
+		                tr_bc[0]/255, tr_bc[1]/255, tr_bc[2]/255, 0.8)
+		status_col = (80, 220, 80) if tr_on else C_TEXT_DIM
+		status_label = "Training Mode  ·  ON  [T]" if tr_on else "Training Mode  ·  OFF  [T]"
+		_blit_centered(LABEL_FONT, status_label, status_col, cx, self.TRAIN_RECT.top + 16)
 
 		end_2d()
 #=============================================================================================================
