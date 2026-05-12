@@ -3,6 +3,7 @@
 import json
 import os
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -18,9 +19,19 @@ import game_state
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _dotenv_search_paths():
+	"""Prefer .env next to the executable when frozen (shipped builds); else project folder."""
+	paths = []
+	if getattr(sys, "frozen", False):
+		paths.append(os.path.join(os.path.dirname(sys.executable), ".env"))
+	paths.append(os.path.join(os.path.dirname(__file__), ".env"))
+	paths.append(".env")
+	return paths
+
+
 def _load_dotenv() -> None:
 	"""Load .env values into process environment (no dependency)."""
-	for path in (os.path.join(os.path.dirname(__file__), ".env"), ".env"):
+	for path in _dotenv_search_paths():
 		if not os.path.isfile(path):
 			continue
 		try:
@@ -60,6 +71,10 @@ def _resolve_service_account_path() -> str:
 	"""Absolute path to the service account JSON (env or default next to this file)."""
 	raw = (os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip().strip('"').strip("'")
 	if not raw:
+		if getattr(sys, "frozen", False):
+			exe_side = os.path.join(os.path.dirname(sys.executable), "firebase_key.json")
+			if os.path.isfile(exe_side):
+				return os.path.normpath(exe_side)
 		return os.path.join(_PACKAGE_DIR, "firebase_key.json")
 	p = os.path.expanduser(raw)
 	if os.path.isabs(p):
@@ -69,10 +84,16 @@ def _resolve_service_account_path() -> str:
 
 _FIREBASE_KEY_PATH = _resolve_service_account_path()
 if not os.path.isfile(_FIREBASE_KEY_PATH):
+	_hint = (
+		f"  next to the app: {os.path.join(os.path.dirname(sys.executable), 'firebase_key.json')}\n"
+		if getattr(sys, "frozen", False)
+		else ""
+	)
 	print(
 		"[firebase] ERROR: Service account JSON not found at:\n"
 		f"  {_FIREBASE_KEY_PATH}\n"
-		"Set FIREBASE_SERVICE_ACCOUNT_JSON in .env to an absolute path, or a path relative to the\n"
+		+ _hint
+		+ "Set FIREBASE_SERVICE_ACCOUNT_JSON in .env to an absolute path, or a path relative to the\n"
 		f"  game project folder: {_PACKAGE_DIR}\n"
 		"(Relative paths are not read from the shell's current working directory.)"
 	)

@@ -5,6 +5,7 @@ Pulsoid heart-rate helpers for the game.
 import json
 import os
 import ssl
+import sys
 import urllib.error
 import urllib.request
 
@@ -12,9 +13,18 @@ PULSOID_HEART_RATE_URL = "https://dev.pulsoid.net/api/v1/data/heart_rate/latest"
 PULSOID_VALIDATE_URL = "https://dev.pulsoid.net/api/v1/token/validate"
 
 
+def _dotenv_search_paths():
+    paths = []
+    if getattr(sys, "frozen", False):
+        paths.append(os.path.join(os.path.dirname(sys.executable), ".env"))
+    paths.append(os.path.join(os.path.dirname(__file__), ".env"))
+    paths.append(".env")
+    return paths
+
+
 def _load_dotenv() -> None:
     """Load .env values into process environment (no dependency)."""
-    for path in (os.path.join(os.path.dirname(__file__), ".env"), ".env"):
+    for path in _dotenv_search_paths():
         if not os.path.isfile(path):
             continue
         try:

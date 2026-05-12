@@ -1,0 +1,2 @@
+# One-time / release builds only (not required to run from source)
+pyinstaller>=6.0

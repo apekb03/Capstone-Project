@@ -20,7 +20,11 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
 
-_GAME_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller one-folder/one-file: bundled data lives under sys._MEIPASS; secrets stay next to the .exe / .app.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+	_GAME_DIR = sys._MEIPASS
+else:
+	_GAME_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def asset_path(*parts: str) -> str:
