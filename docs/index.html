@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Heart Beat Devil — Capstone</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --panel: #12121a;
+      --red: #e82828;
+      --red-dim: #8a2020;
+      --text: #e6e6ea;
+      --muted: #8a8a9a;
+      --accent: #ffc43c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(ellipse 120% 80% at 50% -20%, #1a0a0c 0%, var(--bg) 45%);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }
+    h1 {
+      font-size: clamp(1.75rem, 5vw, 2.25rem);
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--red);
+      text-shadow: 0 0 40px rgba(232, 40, 40, 0.35);
+      margin: 0 0 0.5rem;
+    }
+    .tag {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid rgba(232, 40, 40, 0.25);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .panel h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+    }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+    }
+    pre {
+      background: #0d0d12;
+      border-radius: 8px;
+      padding: 1rem;
+      overflow-x: auto;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      margin: 0;
+    }
+    a { color: var(--accent); }
+    a:hover { text-decoration: underline; }
+    a.cta {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      background: rgba(255, 196, 60, 0.12);
+      border: 1px solid rgba(255, 196, 60, 0.35);
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    a.cta:hover { background: rgba(255, 196, 60, 0.2); }
+    .warn {
+      border-color: rgba(232, 40, 40, 0.5);
+      background: rgba(232, 40, 40, 0.08);
+    }
+    footer {
+      margin-top: 2rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .live-url {
+      font-size: 0.9rem;
+      word-break: break-all;
+      background: #0d0d12;
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 196, 60, 0.25);
+      color: var(--accent);
+    }
+    button.copy {
+      margin-top: 0.6rem;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+    button.copy:hover { background: rgba(255, 255, 255, 0.1); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Heart Beat Devil</h1>
+    <p class="tag">3D capstone game (Python · Pygame · OpenGL). <strong>This live link is the project website</strong> — anyone can open it in a browser. The game itself is <strong>not</strong> embedded here; players install Python and run it locally (or you ship a built app — see below).</p>
+
+    <div class="panel">
+      <h2>Share this live site</h2>
+      <p style="margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--muted);">After you enable GitHub Pages (<code>main</code> → <code>/docs</code>), give people this URL:</p>
+      <div class="live-url" id="live-url">Loading…</div>
+      <button type="button" class="copy" id="copy-btn">Copy link</button>
+    </div>
+
+    <div class="panel">
+      <h2>Download (macOS & Windows)</h2>
+      <p style="margin: 0 0 0.75rem; font-size: 0.92rem;">Install builds are published as <strong>GitHub Releases</strong> (not in git). Open the latest release and download the zip for your OS.</p>
+      <p style="margin: 0 0 0.75rem;">
+        <a id="releases-link" class="cta" href="https://github.com/YOUR_USERNAME/YOUR_REPO/releases/latest">Latest release →</a>
+      </p>
+      <p style="margin: 0; font-size: 0.88rem; color: var(--muted);">After extracting: put <code>.env</code> and <code>firebase_key.json</code> in the <strong>same folder as the game executable</strong> (see repo README). First launch may be blocked by Gatekeeper / SmartScreen — allow the app in system settings.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Run locally</h2>
+      <pre><code>git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
+cd YOUR_REPO
+python3 -m pip install -r requirements.txt
+python3 3DrageBait.py</code></pre>
+      <p style="margin: 0.75rem 0 0; font-size: 0.9rem; color: var(--muted);">Replace <code>YOUR_USERNAME/YOUR_REPO</code> with your GitHub username and repository name after you publish.</p>
+    </div>
+
+    <div class="panel warn">
+      <h2>Secrets</h2>
+      <p style="margin: 0; font-size: 0.92rem;">Do not commit <code>.env</code> or <code>firebase_key.json</code>. Copy from templates, keep keys local only. See the repo <code>README</code> for the tech stack.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Want “play in browser”?</h2>
+      <p style="margin: 0; font-size: 0.92rem;">Standard GitHub Pages only hosts static HTML. This game uses Pygame + OpenGL, so it does <strong>not</strong> run inside a normal web page without a special WebAssembly build (e.g. <strong>pygbag</strong>) or hosting a video/stream. Easiest path for friends: <strong>GitHub Releases</strong> with a Mac/Windows zip or installer, and link that download from this page.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Source</h2>
+      <p style="margin: 0;">Browse code and README on GitHub: <a id="repo-link" href="https://github.com/YOUR_USERNAME/YOUR_REPO">https://github.com/YOUR_USERNAME/YOUR_REPO</a> — edit this file if auto-detect does not match.</p>
+    </div>
+
+    <footer>GitHub Pages serves <code>docs/index.html</code>. Enable: Settings → Pages → Branch <code>main</code>, folder <code>/docs</code>.</footer>
+  </div>
+  <script>
+    (function () {
+      var liveEl = document.getElementById("live-url");
+      var copyBtn = document.getElementById("copy-btn");
+      var u = new URL(window.location.href);
+      u.hash = "";
+      u.pathname = u.pathname.replace(/\/?index\.html$/i, "/");
+      if (!u.pathname.endsWith("/")) u.pathname += "/";
+      liveEl.textContent = u.origin + u.pathname;
+
+      copyBtn.addEventListener("click", function () {
+        var t = liveEl.textContent;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).then(function () {
+            copyBtn.textContent = "Copied!";
+            setTimeout(function () { copyBtn.textContent = "Copy link"; }, 2000);
+          });
+        }
+      });
+
+      var repoLink = document.getElementById("repo-link");
+      var host = window.location.hostname;
+      var pathParts = window.location.pathname.replace(/\/$/, "").split("/").filter(Boolean);
+      var m = /^([^.]+)\.github\.io$/i.exec(host);
+      if (m && pathParts.length >= 1) {
+        var user = m[1];
+        var repo = pathParts[0];
+        var gh = "https://github.com/" + user + "/" + repo;
+        repoLink.href = gh;
+        repoLink.textContent = gh;
+        var rel = document.getElementById("releases-link");
+        if (rel) {
+          rel.href = gh + "/releases/latest";
+        }
+        var pre = document.querySelector("pre code");
+        if (pre && pre.textContent.indexOf("YOUR_USERNAME") !== -1) {
+          pre.textContent =
+            "git clone " + gh + ".git\n" +
+            "cd " + repo + "\n" +
+            "python3 -m pip install -r requirements.txt\n" +
+            "python3 3DrageBait.py";
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
