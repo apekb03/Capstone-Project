@@ -1,0 +1,7 @@
+Inorder to get firebase installed I wanted it to be installed within the project folder and not system wide.
+
+I installed the pip package and then the virtual enviroment (venv)
+To activate it type in source venv/bin/activate 
+You should then see <(venv) laco@HolyGrail> you want the venv infront of the file path to signal it working
+To close it type deactivate
+

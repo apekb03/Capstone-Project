@@ -1,0 +1,93 @@
+(3/28/2026)
+Continued on working on integrating and moving the 2D code into a 3D render and making it work between the two
+python modes, pygame and PyOpenGL. In my tinkering and exploring I came across that you can change the order of
+how everything loads making it easier later to add pause menus and to help prevent breaking and bugs down the line.
+
+
+
+
+(3/27/2026)
+Started working on converting everything to a Class system like the 2D version of our game.
+Start with creating the the player class and level classes. Everything was moved into a class/ state system.
+Global variables are now set in a class relating to their objects i.e player has speed and gravity that can be
+changed in the class and will see an affect across every level. Added two more platforms to jump around on as well
+
+
+
+
+(3/24/2026)
+NOTE: [insert link to pyopengl doc]
+In order to acheive 3D renders and still keep it within python. Found that you can use OpenGL with PyGame.
+To install it for linux you would need to have python3 installed <sudo apt install python3 python3-pip>.
+You might also need some libraries <sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev gcc>.
+Then you should be able to run <sudo apt install python3-opengl>. Now at a glance my concern was converting the code to start using a 3D render and for
+later issues making 3D models to be used. This can be fixed by importing the file type .obj or fbx from blender
+ which alleviates some of my inital concerns.
+Now for the biggest hurdle: converting the render system from 2D to 3D. Started with wireframes need vertices and
+edges. Below is the very basics and begining to building the wire frame cube player. This was quickly changed to
+a solid character for rapid prototyping.
+================================================================ 
+vertices = [ 
+	(1, -1, -1), (1, 1, -1), (-1, 1, -1), 
+	(-1, -1, -1), (1, -1, 1), (1, 1, 1), 
+	(-1, -1, 1), (-1, 1, 1) 
+] 
+
+edges = [ 
+	(0,1), (1,2), (2,3), 
+	(3,0), (4,5), (5,7), 
+	(7,6), (6,4), (0,4), 
+	(1,5), (2,7), (3,6) 
+]
+
+def draw_cube():
+        glBegin(GL_LINES) #tell OpenGL to draw the lines
+        for edge in edges:
+                for vertex in edge:
+                        glVertex3fv(vertices[vertex]) # communicates with the gpu for a 3D point
+        glEnd()
+================================================================
+Below is what the updated player cube code looks like with updated draw_cube function
+================================================================
+vertices = [
+        (1, -1, -1), (1, 1, -1), (-1, 1, -1), 
+        (-1, -1, -1), (1, -1, 1), (1, 1, 1),  
+        (-1, -1, 1), (-1, 1, 1)   
+]
+ 
+faces = [
+        (0, 1, 2, 3), #backside
+        (4, 5, 7, 6), #frontFace
+        (0, 1, 5, 4), #rightface
+        (2, 3, 6, 7), #Left Face
+        (1, 2, 7, 5), #Top face
+        (0, 3, 6, 4) #Bottom face
+]
+
+def draw_cube():
+        glBegin(GL_QUADS) #tell OpenGL to draw the lines
+        for face in faces:
+                for vertex in face:
+                        glVertex3fv(vertices[vertex]) # communicates with the gpu for a 3D point
+        glEnd()
+==========================================================================
+
+After some debugging and learning a bit more on how the matrixs work in opengl I was able to get a working 
+camera and movement with free range in a 3d world. Moved on to AABB style collision because what I had for quick
+prototyping was creating a invisible ground that was not intended. AABB Stands for "Axis-Aligned Bounding Box".
+The way it works is that the bounding box is an invisible box that surrounds your object; in this case its a cube
+player. the bounding box is used for our collision detection with our player and ground/platforms. to calculate a
+cube we can do this ->
+===================================
+x_min = center_x - half_width
+x_max = center_x + half_width
+z_min = center_z - half_depth
+z_max = center_z + half_depth
+y_min = center_y - half_height
+y_max = center_y + half_height
+===================================
+Where the min and max of x,y,z are just the center's of the cube position and then the half_width,depth and
+height are just half of what ever the cubes dimensions are. an example of this is if we have the player cube coming
+into contact with a platform, if the x,y,z ranges overlap then we have a collision.
+===================================================
+

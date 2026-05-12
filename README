@@ -1,0 +1,128 @@
+# Capstone 3DrageBait — Tech Stack
+
+*(Heart Beat Devil — Pygame + OpenGL desktop game.)*
+
+## Quick start (share with others)
+
+### Run from source (developers)
+```bash
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
+cd YOUR_REPO
+python3 -m pip install -r requirements.txt
+python3 3DrageBait.py
+```
+Replace `YOUR_USERNAME/YOUR_REPO` with your GitHub path.
+
+### Live website (for a public link)
+This repo includes **`docs/index.html`** for **GitHub Pages**. After you enable Pages (**Settings → Pages →** branch **`main`**, folder **`/docs`**), share:
+
+**`https://YOUR_USERNAME.github.io/YOUR_REPO/`**
+
+That page is a **project site** (how to run / how to download). The game **does not play inside the browser** there unless you do a separate WebAssembly port (e.g. pygbag).
+
+### Downloadable installs — macOS & Windows
+Build **two zip files** (one on a Mac, one on Windows) with PyInstaller, then attach them to a **GitHub Release**. Step-by-step commands are in **§ Publishing to GitHub → section 4** below.
+
+**End users:** unzip the release, then put **`firebase_key.json`** and **`.env`** in the **same folder** as **`HeartBeatDevil`** (macOS) or **`HeartBeatDevil.exe`** (Windows). Do not commit those files to git.
+
+---
+
+## Language
+- Python 3
+
+## Core runtime / dependencies
+- `pygame`: windowing, input handling, fonts, and basic 2D overlays
+- `PyOpenGL` (+ `PyOpenGL-accelerate`): 3D rendering + HUD text blits
+- `numpy` (indirect via other libs): common for vision/ML stacks
+
+## Game logic & I/O
+- Keyboard/mouse: `pygame` event/input polling
+- Camera / face-mode emotion labels (Mode 2):
+  - `opencv-python`: webcam frame capture + preprocessing
+  - `deepface`: facial emotion inference
+  - `tensorflow`: DeepFace backend requirements
+- Heart rate input (Mode 1):
+  - `pulsoid_heartrate.py` (local module in repo): Pulsoid token validation + data fetching
+  - `bleak`: Bluetooth Low Energy client (used by the project’s input receiver logic)
+
+## Backend / persistence (Firebase)
+The project uses Firebase Admin SDK:
+- `firebase-admin`
+  - Firestore: user profile documents (for storing/displaying user info)
+  - Realtime Database: leaderboard writes/reads under `leaderboards/<Level X>/`
+- `python-dotenv`: reads `.env` so the app can configure Firebase + tokens
+- `requests`: used by the Firebase auth / REST helpers
+
+## Python packages (see `requirements.txt`)
+- `pygame`
+- `PyOpenGL`
+- `PyOpenGL-accelerate`
+- `bleak`
+- `firebase-admin`
+- `python-dotenv`
+- `requests`
+- `opencv-python>=4.8`
+- `deepface>=0.0.90`
+- `tensorflow>=2.12`
+
+## Local configuration files
+- `.env`: tokens/URLs (Pulsoid token, Firebase RTDB URL or credentials path, etc.)
+- `firebase_key.json`: Firebase service account JSON (or use `FIREBASE_SERVICE_ACCOUNT_JSON`)
+
+## Publishing to GitHub (code + optional site)
+
+This project is a **desktop game** (Pygame), not a single-page web app. GitHub holds your **source code**. A small **GitHub Pages** site in `docs/` explains the project and how to run it.
+
+### 1. Create the repository on GitHub
+- New repository → name it (e.g. `heart-beat-devil`) → create **without** committing a README if you already have one locally.
+
+### 2. Push from your machine (inside `Capstone-Project-final`)
+Never commit secrets. This repo’s `.gitignore` already excludes `.env` and `firebase_key.json`.
+
+```bash
+cd /path/to/Capstone-Project-final
+git init
+git add .
+git commit -m "Initial commit: Heart Beat Devil capstone"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
+```
+
+### 3. Optional: enable GitHub Pages
+- Repo → **Settings** → **Pages**
+- **Build and deployment**: Deploy from a branch
+- Branch: **main** (or **master**), folder: **/docs**
+- Save. The site will be at `https://YOUR_USERNAME.github.io/YOUR_REPO/` (after a short build delay).
+
+**Share that URL with anyone** — they get the live project page (instructions, copy link button). The **game does not run inside the browser** on that page; friends need Python + clone, or you publish a **built app** (e.g. zip on GitHub Releases) and link it from `docs/index.html`. A true in-browser build would need a separate toolchain (e.g. pygbag / WebAssembly), not plain GitHub Pages.
+
+Edit `docs/index.html` only if your repo is not under the default `username.github.io/reponame/` pattern (the page auto-fills GitHub + clone commands when it is).
+
+### 4. Ship macOS + Windows builds (GitHub Releases)
+PyInstaller cannot cross-compile: build **on a Mac** for macOS and **on a PC** for Windows.
+
+**macOS (on your Mac):**
+```bash
+cd Capstone-Project-final
+chmod +x scripts/build_mac.sh
+./scripts/build_mac.sh
+cd dist && zip -r HeartBeatDevil-mac.zip HeartBeatDevil
+```
+
+**Windows (on a Windows machine):**
+```powershell
+cd Capstone-Project-final
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+```
+Then zip the `dist\HeartBeatDevil` folder (e.g. `HeartBeatDevil-windows.zip`).
+
+**Publish:** GitHub repo → **Releases** → **Draft a new release** → attach both zips. The website in `docs/` links to `…/releases/latest` automatically when hosted on GitHub Pages.
+
+**Players:** Unzip, then place **`firebase_key.json`** and **`.env`** in the **same folder as `HeartBeatDevil` / `HeartBeatDevil.exe`** (never commit those files to git). Optional: Apple Gatekeeper / Windows SmartScreen may require “Open anyway” the first time.
+
+**Note:** Frozen builds include the `models/` folder. Facial-emotion mode pulls **OpenCV / DeepFace / TensorFlow** at runtime if installed in your build environment; those libraries make the folder **very large**. If the build fails or is too big, install full `requirements.txt` on the build machine or trim optional deps for a smaller build without emotion mode.
+
+### Warning if your git root is `final_demo`
+Do **not** `git add firebase_key.json` or `.env` from the parent folder. Prefer opening the repo at `Capstone-Project-final` only, or add a root `.gitignore` that ignores those files.
+
